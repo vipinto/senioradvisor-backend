@@ -411,4 +411,3 @@ async def register_provider_public(data: ProviderRegistrationRequest):
         "provider_id": provider_id,
         "status": "pending_approval"
     }
-Exit code: 0

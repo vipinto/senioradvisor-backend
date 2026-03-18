@@ -1046,6 +1046,54 @@ async def _run_google_sync(api_key: str):
                             "total_reviews": total,
                             "google_synced_at": datetime.now(timezone.utc).isoformat(),
                         }}
-           
-... [stdout truncated]
-Exit code: 0
+)
+                    synced += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                logging.error(f"Error syncing {p['business_name']}: {e}")
+                failed += 1
+            
+            await asyncio.sleep(0.15)
+        
+        await db.system_config.update_one(
+            {"key": "google_sync"},
+            {"$set": {"key": "google_sync", "synced": synced, "failed": failed, "completed_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+        logging.info(f"Google sync complete: {synced} synced, {failed} failed")
+    except Exception as e:
+        logging.error(f"Google sync error: {e}")
+    finally:
+        _sync_task_running = False
+
+
+@router.post("/sync-google-ratings")
+async def sync_google_ratings(request: Request):
+    """Start Google ratings sync in background"""
+    global _sync_task_running
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    
+    if _sync_task_running:
+        return {"message": "Sincronización ya en curso, espera unos minutos"}
+    
+    api_key = os.environ.get("GOOGLE_PLACES_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GOOGLE_PLACES_API_KEY no configurada")
+    
+    asyncio.create_task(_run_google_sync(api_key))
+    return {"message": "Sincronización iniciada en segundo plano. Los ratings se actualizarán en ~2 minutos."}
+
+
+@router.get("/sync-google-ratings/status")
+async def sync_google_ratings_status(request: Request):
+    """Check status of last Google sync"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    
+    status = await db.system_config.find_one({"key": "google_sync"}, {"_id": 0})
+    return {
+        "running": _sync_task_running,
+        "last_sync": status,
+    }

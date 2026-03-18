@@ -416,4 +416,3 @@ async def require_admin(user: dict):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Solo administradores pueden acceder")
     return user
-Exit code: 0
