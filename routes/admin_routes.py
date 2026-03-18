@@ -4,7 +4,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 import uuid, random, string, io
 import httpx, os, logging, asyncio
-from passlib.hash import bcrypt
+import bcrypt as bcrypt_lib
 
 from database import db
 from auth import get_current_user, require_admin
@@ -362,8 +362,11 @@ def generate_password(length=10):
     chars = string.ascii_letters + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
 
-# Faster bcrypt for bulk operations (reduced rounds)
-_bcrypt_bulk = bcrypt.using(rounds=6)
+def _hash_password(password: str) -> str:
+    return bcrypt_lib.hashpw(password.encode('utf-8'), bcrypt_lib.gensalt()).decode('utf-8')
+
+def _hash_password_fast(password: str) -> str:
+    return bcrypt_lib.hashpw(password.encode('utf-8'), bcrypt_lib.gensalt(rounds=6)).decode('utf-8')
 
 @router.post("/residencias/create")
 async def create_residencia(data: ResidenciaCreate, request: Request):
@@ -384,7 +387,7 @@ async def create_residencia(data: ResidenciaCreate, request: Request):
         "email": data.email,
         "name": data.business_name,
         "role": "provider",
-        "hashed_password": bcrypt.hash(password),
+        "hashed_password": _hash_password(password),
         "created_at": now.isoformat(),
         "active": True,
     }
@@ -471,7 +474,7 @@ async def bulk_create_residencias(data: BulkResidenciaCreate, request: Request):
             "email": item.email,
             "name": item.business_name,
             "role": "provider",
-            "hashed_password": _bcrypt_bulk.hash(password),
+            "hashed_password": _hash_password_fast(password),
             "created_at": now.isoformat(),
             "active": True,
         }
@@ -715,7 +718,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             "email": email,
             "name": bname,
             "role": "provider",
-            "hashed_password": _bcrypt_bulk.hash(password),
+            "hashed_password": _hash_password_fast(password),
             "created_at": now.isoformat(),
             "active": True,
         })
@@ -1043,54 +1046,6 @@ async def _run_google_sync(api_key: str):
                             "total_reviews": total,
                             "google_synced_at": datetime.now(timezone.utc).isoformat(),
                         }}
-                    )
-                    synced += 1
-                else:
-                    failed += 1
-            except Exception as e:
-                logging.error(f"Error syncing {p['business_name']}: {e}")
-                failed += 1
-            
-            await asyncio.sleep(0.15)
-        
-        await db.system_config.update_one(
-            {"key": "google_sync"},
-            {"$set": {"key": "google_sync", "synced": synced, "failed": failed, "completed_at": datetime.now(timezone.utc).isoformat()}},
-            upsert=True,
-        )
-        logging.info(f"Google sync complete: {synced} synced, {failed} failed")
-    except Exception as e:
-        logging.error(f"Google sync error: {e}")
-    finally:
-        _sync_task_running = False
-
-
-@router.post("/sync-google-ratings")
-async def sync_google_ratings(request: Request):
-    """Start Google ratings sync in background"""
-    global _sync_task_running
-    user = await get_current_user(request, db)
-    await require_admin(user)
-    
-    if _sync_task_running:
-        return {"message": "Sincronización ya en curso, espera unos minutos"}
-    
-    api_key = os.environ.get("GOOGLE_PLACES_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GOOGLE_PLACES_API_KEY no configurada")
-    
-    asyncio.create_task(_run_google_sync(api_key))
-    return {"message": "Sincronización iniciada en segundo plano. Los ratings se actualizarán en ~2 minutos."}
-
-
-@router.get("/sync-google-ratings/status")
-async def sync_google_ratings_status(request: Request):
-    """Check status of last Google sync"""
-    user = await get_current_user(request, db)
-    await require_admin(user)
-    
-    status = await db.system_config.find_one({"key": "google_sync"}, {"_id": 0})
-    return {
-        "running": _sync_task_running,
-        "last_sync": status,
-    }
+           
+... [stdout truncated]
+Exit code: 0

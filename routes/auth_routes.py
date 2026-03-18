@@ -75,8 +75,17 @@ async def email_register(data: EmailRegisterRequest):
 @router.post("/login")
 async def email_login(data: EmailLoginRequest):
     """Login with email and password"""
-    result = await login_user(data.email, data.password, db)
-    return result
+    import traceback
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        result = await login_user(data.email, data.password, db)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 
 #@router.post("/google")
@@ -318,7 +327,7 @@ async def register_provider_public(data: ProviderRegistrationRequest):
     """Public registration for a new residence/provider. Requires admin approval."""
     import uuid
     from datetime import datetime, timezone
-    from passlib.hash import bcrypt
+    import bcrypt as bcrypt_lib
 
     if len(data.password) < 6:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
@@ -341,7 +350,7 @@ async def register_provider_public(data: ProviderRegistrationRequest):
         "email": data.email,
         "name": data.business_name,
         "role": "provider",
-        "hashed_password": bcrypt.hash(data.password),
+        "hashed_password": bcrypt_lib.hashpw(data.password.encode('utf-8'), bcrypt_lib.gensalt()).decode('utf-8'),
         "auth_type": "email",
         "created_at": now,
         "active": True,
@@ -402,4 +411,4 @@ async def register_provider_public(data: ProviderRegistrationRequest):
         "provider_id": provider_id,
         "status": "pending_approval"
     }
-
+Exit code: 0

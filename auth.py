@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 import uuid
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from passlib.hash import bcrypt
+import bcrypt as bcrypt_lib
 import jwt
 import os
 import resend
@@ -60,7 +60,7 @@ async def register_user(email: str, password: str, name: str, db: AsyncIOMotorDa
         role = "client"
 
     user_id = f"user_{uuid.uuid4().hex[:12]}"
-    hashed = bcrypt.hash(password)
+    hashed = bcrypt_lib.hashpw(password.encode('utf-8'), bcrypt_lib.gensalt()).decode('utf-8')
 
     user = {
         "user_id": user_id,
@@ -125,7 +125,7 @@ async def login_user(email: str, password: str, db: AsyncIOMotorDatabase):
             detail="Esta cuenta usa inicio de sesión con Google. Por favor usa el botón de Google."
         )
 
-    if not bcrypt.verify(password, user["hashed_password"]):
+    if not bcrypt_lib.checkpw(password.encode('utf-8'), user["hashed_password"].encode('utf-8')):
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
 
     token = create_jwt_token(user["user_id"], email)
@@ -305,7 +305,7 @@ async def reset_password(token: str, new_password: str, db: AsyncIOMotorDatabase
         await db.password_resets.delete_one({"token": token})
         raise HTTPException(status_code=400, detail="El enlace ha expirado")
 
-    hashed = bcrypt.hash(new_password)
+    hashed = bcrypt_lib.hashpw(new_password.encode('utf-8'), bcrypt_lib.gensalt()).decode('utf-8')
     await db.users.update_one(
         {"email": reset["email"]},
         {"$set": {"hashed_password": hashed}}
@@ -416,3 +416,4 @@ async def require_admin(user: dict):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Solo administradores pueden acceder")
     return user
+Exit code: 0
