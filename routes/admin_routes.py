@@ -945,8 +945,10 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
     if not provider:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
 
-    allowed = ["business_name", "phone", "address", "region", "comuna", "place_id",
-               "social_links", "services", "amenities", "description", "youtube_video_url"]
+    allowed = ["business_name", "phone", "whatsapp", "address", "region", "comuna", "place_id",
+               "social_links", "services", "amenities", "description", "youtube_video_url",
+               "personal_info", "latitude", "longitude", "is_featured", "is_subscribed",
+               "service_type", "service_comunas", "walking_zones", "coverage_radius_km"]
     update = {k: v for k, v in body.items() if k in allowed}
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
@@ -1046,7 +1048,7 @@ async def _run_google_sync(api_key: str):
                             "total_reviews": total,
                             "google_synced_at": datetime.now(timezone.utc).isoformat(),
                         }}
-)
+                    )
                     synced += 1
                 else:
                     failed += 1
