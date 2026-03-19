@@ -1150,14 +1150,21 @@ async def get_provider(provider_id: str, request: Request):
         {"_id": 0},
     )
     provider_is_subscribed = provider_sub is not None
-    provider["is_featured"] = provider.get("verified", False) and provider_is_subscribed
-    provider["provider_is_subscribed"] = provider_is_subscribed
+    # Admin override: if is_featured/is_subscribed stored in provider doc, use those
+    if "is_featured" in provider:
+        pass  # keep the stored value
+    else:
+        provider["is_featured"] = provider.get("verified", False) and provider_is_subscribed
+    if "is_subscribed" in provider:
+        provider["provider_is_subscribed"] = provider["is_subscribed"]
+    else:
+        provider["provider_is_subscribed"] = provider_is_subscribed
     provider["viewer_has_subscription"] = True  # Clientes siempre ven todo
     provider["viewer_is_connected"] = is_connected
     provider["viewer_has_pending_request"] = has_pending_request
 
     # Only include premium_gallery if provider is subscribed
-    if not provider_is_subscribed:
+    if not provider.get("provider_is_subscribed"):
         provider["premium_gallery"] = []
 
     # Clientes ven toda la información de contacto sin restricción
