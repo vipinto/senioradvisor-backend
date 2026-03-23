@@ -208,7 +208,12 @@ async def get_my_provider_profile(request: Request):
         {"user_id": user["user_id"], "status": "active"},
         {"_id": 0},
     )
-    provider["is_subscribed"] = sub is not None
+    # Admin override: if is_subscribed stored in provider doc, use that
+    if "is_subscribed" in provider:
+        pass  # keep admin-set value
+    else:
+        provider["is_subscribed"] = sub is not None
+    provider["has_active_subscription"] = sub is not None or provider.get("is_subscribed", False)
 
     return provider
 

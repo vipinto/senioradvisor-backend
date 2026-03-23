@@ -594,12 +594,30 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             col_map["staff_type"] = col
         elif col in ("region", "región"):
             col_map["region"] = col
-        elif col in ("disponibilidad", "availability"):
+        elif col in ("disponibilidad", "availability", "horario_atencion", "horario"):
             col_map["disponibilidad"] = col
-        elif col in ("video promocional", "video"):
+        elif col in ("video promocional", "video", "youtube", "youtube_video_url"):
             col_map["video"] = col
         elif col == "whatsapp":
             col_map["whatsapp"] = col
+        elif col in ("tipo_instalacion", "tipo instalacion", "housing_type"):
+            col_map["housing_type"] = col
+        elif col in ("bio", "descripcion_adicional"):
+            col_map["bio"] = col
+        elif col in ("precio_residencias", "precio residencias"):
+            col_map["precio_residencias"] = col
+        elif col in ("desc_residencias", "descripcion residencias"):
+            col_map["desc_residencias"] = col
+        elif col in ("precio_cuidado_domicilio", "precio cuidado domicilio"):
+            col_map["precio_cuidado_domicilio"] = col
+        elif col in ("desc_cuidado_domicilio", "descripcion cuidado domicilio"):
+            col_map["desc_cuidado_domicilio"] = col
+        elif col in ("precio_salud_mental", "precio salud mental"):
+            col_map["precio_salud_mental"] = col
+        elif col in ("desc_salud_mental", "descripcion salud mental"):
+            col_map["desc_salud_mental"] = col
+        elif col.startswith("imagen_premium_"):
+            col_map[col] = col
 
     if "business_name" not in col_map:
         raise HTTPException(status_code=400, detail="El archivo debe tener la columna 'nombre residencia' o 'nombre'")
@@ -677,6 +695,8 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
         logo = get_val(row, "logo")
         staff_type = get_val(row, "staff_type")
         disponibilidad = get_val(row, "disponibilidad")
+        housing_type = get_val(row, "housing_type") or "residencia"
+        bio = get_val(row, "bio")
 
         gallery = []
         for img_key in ["imagen_1", "imagen_2", "imagen_3"]:
@@ -686,6 +706,18 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
                     "photo_id": f"csv_{uuid.uuid4().hex[:8]}",
                     "url": img_url,
                     "thumbnail_url": img_url,
+                    "uploaded_at": now.isoformat(),
+                })
+
+        premium_gallery = []
+        for i in range(1, 11):
+            pg_key = f"imagen_premium_{i}"
+            pg_url = get_val(row, pg_key)
+            if pg_url and pg_url.startswith("http"):
+                premium_gallery.append({
+                    "photo_id": f"csv_p_{uuid.uuid4().hex[:8]}",
+                    "url": pg_url,
+                    "thumbnail_url": pg_url,
                     "uploaded_at": now.isoformat(),
                 })
 
@@ -703,15 +735,33 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             social_links["video"] = video
 
         service_type_raw = get_val(row, "service_type")
-        service_type = "residencias"
-        if service_type_raw:
-            st_lower = service_type_raw.lower()
-            if "domicilio" in st_lower:
-                service_type = "cuidado-domicilio"
-            elif "mental" in st_lower or "psico" in st_lower:
-                service_type = "salud-mental"
-
         price_from = parse_int(get_val(row, "price_from"))
+
+        # Build services from individual category columns or fallback to single type/price
+        services = []
+        p_res = parse_int(get_val(row, "precio_residencias"))
+        d_res = get_val(row, "desc_residencias")
+        if p_res or d_res:
+            services.append({"service_type": "residencias", "price_from": p_res, "description": d_res})
+        p_dom = parse_int(get_val(row, "precio_cuidado_domicilio"))
+        d_dom = get_val(row, "desc_cuidado_domicilio")
+        if p_dom or d_dom:
+            services.append({"service_type": "cuidado-domicilio", "price_from": p_dom, "description": d_dom})
+        p_sal = parse_int(get_val(row, "precio_salud_mental"))
+        d_sal = get_val(row, "desc_salud_mental")
+        if p_sal or d_sal:
+            services.append({"service_type": "salud-mental", "price_from": p_sal, "description": d_sal})
+        # Fallback: if no individual columns, use legacy tipo/precio
+        if not services:
+            service_type = "residencias"
+            if service_type_raw:
+                st_lower = service_type_raw.lower()
+                if "domicilio" in st_lower:
+                    service_type = "cuidado-domicilio"
+                elif "mental" in st_lower or "psico" in st_lower:
+                    service_type = "salud-mental"
+            if price_from:
+                services.append({"service_type": service_type, "price_from": price_from, "description": ""})
 
         users_to_insert.append({
             "user_id": user_id,
@@ -733,12 +783,17 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             "comuna": comuna,
             "region": region,
             "description": description,
-            "services": [{"service_type": service_type, "price_from": price_from, "description": ""}],
+            "services": services,
             "photos": [],
             "gallery": gallery,
+            "premium_gallery": premium_gallery,
             "amenities": amenities,
             "social_links": social_links,
-            "personal_info": {"housing_type": "residencia", "animal_experience": "N/A"},
+            "personal_info": {
+                "housing_type": housing_type,
+                "daily_availability": disponibilidad,
+                "bio": bio,
+            },
             "rating": rating,
             "total_reviews": total_reviews,
             "approved": True,
@@ -748,7 +803,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             "place_id": place_id,
             "logo": logo,
             "staff_type": staff_type,
-            "disponibilidad": disponibilidad,
+            "youtube_video_url": video,
             "coverage_zone": "10",
             "created_at": now,
             "approved_at": now,
