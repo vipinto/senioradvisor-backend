@@ -62,17 +62,12 @@ class ContactRequestCreate(BaseModel):
 
 @router.post("/contact-requests")
 async def send_contact_request(data: ContactRequestCreate, request: Request):
-    """Premium client sends a direct contact request to a carer"""
+    """Client sends a direct contact request to a provider"""
     user = await get_current_user(request, db)
 
     # Must be a client (not provider)
     if user.get("role") == "provider":
         raise HTTPException(status_code=403, detail="Solo clientes pueden enviar solicitudes de contacto")
-
-    # Must have premium subscription
-    subscription = await db.subscriptions.find_one({"user_id": user["user_id"], "status": "active"})
-    if not subscription:
-        raise HTTPException(status_code=403, detail="Necesitas suscripcion Premium para contactar proveedores directamente")
 
     # Provider must exist
     provider = await db.providers.find_one({"user_id": data.provider_user_id, "approved": True})
