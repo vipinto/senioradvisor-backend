@@ -208,8 +208,8 @@ async def get_my_provider_profile(request: Request):
         {"user_id": user["user_id"], "status": "active"},
         {"_id": 0},
     )
-    # Admin override: if is_subscribed stored in provider doc, use that
-    if "is_subscribed" in provider:
+    # Admin override: if is_subscribed stored in provider doc (from DB), use that
+    if "is_subscribed" in provider and isinstance(provider.get("is_subscribed"), bool):
         pass  # keep admin-set value
     else:
         provider["is_subscribed"] = sub is not None
@@ -265,6 +265,7 @@ async def update_my_profile_services(request: Request):
                 "service_type": svc.get("service_type"),
                 "price_from": svc.get("price_from", 0),
                 "description": svc.get("description", ""),
+                "sub_prices": svc.get("sub_prices", []),
                 "rules": svc.get("rules", ""),
                 "pet_sizes": svc.get("pet_sizes", []),
                 "created_at": datetime.now(timezone.utc),

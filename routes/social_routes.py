@@ -180,7 +180,7 @@ async def create_review(review_data: ReviewCreate, request: Request):
         "user_id": user["user_id"],
         **review_data.model_dump(),
         "moderated": False,
-        "approved": True,
+        "approved": False,
         "published": False,
         "publish_after": datetime.now(timezone.utc) + timedelta(days=7),
         "created_at": datetime.now(timezone.utc)

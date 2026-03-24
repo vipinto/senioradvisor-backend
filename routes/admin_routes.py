@@ -1007,6 +1007,23 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
     update = {k: v for k, v in body.items() if k in allowed}
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
+
+    # Sync services to separate services collection if updated
+    if "services" in update:
+        await db.services.delete_many({"provider_id": provider_id})
+        for svc in update["services"]:
+            service_doc = {
+                "service_id": f"serv_{uuid.uuid4().hex[:12]}",
+                "provider_id": provider_id,
+                "service_type": svc.get("service_type", "residencias"),
+                "price_from": svc.get("price_from", 0),
+                "description": svc.get("description", ""),
+                "sub_prices": svc.get("sub_prices", []),
+                "rules": svc.get("rules", ""),
+                "pet_sizes": svc.get("pet_sizes", []),
+                "created_at": datetime.now(timezone.utc),
+            }
+            await db.services.insert_one(service_doc)
     
     updated = await db.providers.find_one({"provider_id": provider_id}, {"_id": 0})
     return updated
@@ -1153,4 +1170,251 @@ async def sync_google_ratings_status(request: Request):
     return {
         "running": _sync_task_running,
         "last_sync": status,
+    }
+
+
+
+# ============= REVIEW MODERATION =============
+
+@router.get("/reviews")
+async def get_all_reviews(request: Request, status: str = "pending"):
+    """Get reviews for admin moderation"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    
+    query = {}
+    if status == "pending":
+        query["approved"] = False
+    elif status == "approved":
+        query["approved"] = True
+    
+    reviews = await db.reviews.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    
+    for review in reviews:
+        reviewer = await db.users.find_one({"user_id": review.get("user_id")}, {"_id": 0, "name": 1, "email": 1, "picture": 1})
+        if reviewer:
+            review["user_name"] = reviewer.get("name", "Usuario")
+            review["user_email"] = reviewer.get("email", "")
+        provider = await db.providers.find_one({"provider_id": review.get("provider_id")}, {"_id": 0, "business_name": 1})
+        if provider:
+            review["provider_name"] = provider.get("business_name", "")
+    
+    return {"reviews": reviews, "total": len(reviews)}
+
+
+@router.post("/reviews/{review_id}/approve")
+async def approve_review(review_id: str, request: Request):
+    """Approve a review"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    
+    result = await db.reviews.update_one(
+        {"review_id": review_id},
+        {"$set": {"approved": True, "moderated": True, "published": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Resena no encontrada")
+    
+    review = await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
+    if review:
+        from routes.social_routes import _update_provider_rating
+        await _update_provider_rating(review["provider_id"])
+    
+    return {"message": "Resena aprobada"}
+
+
+@router.post("/reviews/{review_id}/reject")
+async def reject_review(review_id: str, request: Request):
+    """Reject a review"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    
+    result = await db.reviews.delete_one({"review_id": review_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Resena no encontrada")
+    
+    return {"message": "Resena eliminada"}
+
+
+# ============= LEADS / TRÁFICO =============
+
+@router.get("/leads")
+async def get_admin_leads(request: Request):
+    """Get all contact requests and care requests as leads for admin"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+
+    # Get all contact requests
+    contact_requests = await db.contact_requests.find(
+        {}, {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+
+    # Get all care requests
+    care_requests = await db.care_requests.find(
+        {}, {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+
+    # Get all proposals
+    proposals = await db.proposals.find(
+        {}, {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+
+    # Enrich contact requests
+    for cr in contact_requests:
+        cr["lead_type"] = "contact_request"
+        # Get client info
+        client = await db.users.find_one(
+            {"user_id": cr.get("client_user_id")},
+            {"_id": 0, "name": 1, "email": 1, "phone": 1, "picture": 1}
+        )
+        if client:
+            cr["client_email"] = client.get("email", "")
+            cr["client_phone"] = client.get("phone", "")
+            if not cr.get("client_name"):
+                cr["client_name"] = client.get("name", "Cliente")
+        # Get provider/residence info
+        provider = await db.providers.find_one(
+            {"user_id": cr.get("provider_user_id")},
+            {"_id": 0, "business_name": 1, "provider_id": 1, "comuna": 1}
+        )
+        if provider:
+            cr["provider_business_name"] = provider.get("business_name", "")
+            cr["provider_provider_id"] = provider.get("provider_id", "")
+            cr["provider_comuna"] = provider.get("comuna", "")
+
+    # Enrich care requests
+    for req in care_requests:
+        req["lead_type"] = "care_request"
+        # Get client info
+        client = await db.users.find_one(
+            {"user_id": req.get("client_id")},
+            {"_id": 0, "name": 1, "email": 1, "phone": 1}
+        )
+        if client:
+            req["client_email"] = client.get("email", "")
+            req["client_phone"] = client.get("phone", "")
+
+    # Enrich proposals with care request info
+    for prop in proposals:
+        prop["lead_type"] = "proposal"
+        care_req = await db.care_requests.find_one(
+            {"request_id": prop.get("care_request_id")},
+            {"_id": 0, "patient_name": 1, "service_type": 1, "comuna": 1, "client_id": 1, "client_name": 1}
+        )
+        if care_req:
+            prop["care_request_info"] = care_req
+            client = await db.users.find_one(
+                {"user_id": care_req.get("client_id")},
+                {"_id": 0, "name": 1, "email": 1}
+            )
+            if client:
+                prop["client_name"] = client.get("name", "")
+                prop["client_email"] = client.get("email", "")
+
+    return {
+        "contact_requests": contact_requests,
+        "care_requests": care_requests,
+        "proposals": proposals
+    }
+
+
+@router.get("/leads/metrics")
+async def get_admin_leads_metrics(request: Request):
+    """Get aggregated lead metrics for admin dashboard"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+
+    # Contact request counts
+    cr_total = await db.contact_requests.count_documents({})
+    cr_pending = await db.contact_requests.count_documents({"status": "pending"})
+    cr_accepted = await db.contact_requests.count_documents({"status": "accepted"})
+    cr_rejected = await db.contact_requests.count_documents({"status": "rejected"})
+
+    # Care request counts
+    care_total = await db.care_requests.count_documents({})
+    care_active = await db.care_requests.count_documents({"status": "active"})
+    care_completed = await db.care_requests.count_documents({"status": "completed"})
+
+    # Proposal counts
+    prop_total = await db.proposals.count_documents({})
+    prop_pending = await db.proposals.count_documents({"status": "pending"})
+    prop_accepted = await db.proposals.count_documents({"status": "accepted"})
+    prop_rejected = await db.proposals.count_documents({"status": "rejected"})
+
+    total_leads = cr_total + care_total
+    total_conversions = cr_accepted + care_completed
+    conversion_rate = round((total_conversions / total_leads * 100), 1) if total_leads > 0 else 0
+
+    # Per-residence metrics (from contact requests)
+    all_contact_requests = await db.contact_requests.find(
+        {}, {"_id": 0, "provider_user_id": 1, "status": 1}
+    ).to_list(1000)
+
+    # Build per-residence map
+    residence_map = {}
+    for cr in all_contact_requests:
+        puid = cr.get("provider_user_id", "unknown")
+        if puid not in residence_map:
+            residence_map[puid] = {"total": 0, "pending": 0, "accepted": 0, "rejected": 0}
+        residence_map[puid]["total"] += 1
+        status = cr.get("status", "pending")
+        if status in residence_map[puid]:
+            residence_map[puid][status] += 1
+
+    # Also count proposals per provider
+    all_proposals = await db.proposals.find(
+        {}, {"_id": 0, "provider_id": 1, "status": 1}
+    ).to_list(1000)
+    for prop in all_proposals:
+        puid = prop.get("provider_id", "unknown")
+        if puid not in residence_map:
+            residence_map[puid] = {"total": 0, "pending": 0, "accepted": 0, "rejected": 0}
+        residence_map[puid]["total"] += 1
+        status = prop.get("status", "pending")
+        if status in residence_map[puid]:
+            residence_map[puid][status] += 1
+
+    # Enrich with provider names
+    per_residence = []
+    for puid, counts in residence_map.items():
+        provider = await db.providers.find_one(
+            {"user_id": puid},
+            {"_id": 0, "business_name": 1, "provider_id": 1, "comuna": 1, "is_subscribed": 1}
+        )
+        rate = round((counts["accepted"] / counts["total"] * 100), 1) if counts["total"] > 0 else 0
+        per_residence.append({
+            "provider_user_id": puid,
+            "business_name": provider.get("business_name", "Desconocido") if provider else "Desconocido",
+            "provider_id": provider.get("provider_id", "") if provider else "",
+            "comuna": provider.get("comuna", "") if provider else "",
+            "is_subscribed": provider.get("is_subscribed", False) if provider else False,
+            "total": counts["total"],
+            "pending": counts["pending"],
+            "accepted": counts["accepted"],
+            "rejected": counts["rejected"],
+            "conversion_rate": rate
+        })
+
+    # Sort by total leads descending
+    per_residence.sort(key=lambda x: x["total"], reverse=True)
+
+    return {
+        "summary": {
+            "total_leads": total_leads,
+            "contact_requests": {
+                "total": cr_total, "pending": cr_pending,
+                "accepted": cr_accepted, "rejected": cr_rejected
+            },
+            "care_requests": {
+                "total": care_total, "active": care_active,
+                "completed": care_completed
+            },
+            "proposals": {
+                "total": prop_total, "pending": prop_pending,
+                "accepted": prop_accepted, "rejected": prop_rejected
+            },
+            "conversion_rate": conversion_rate,
+            "total_conversions": total_conversions
+        },
+        "per_residence": per_residence
     }
