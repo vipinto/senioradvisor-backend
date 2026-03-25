@@ -544,7 +544,9 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     # Build column map for flexible naming
     col_map = {}
     for col in df.columns:
-        if col in ("nombre residencia", "nombre_residencia", "nombre", "business_name", "residencia"):
+        if col in ("codigo", "código", "id", "code"):
+            col_map["codigo"] = col
+        elif col in ("nombre residencia", "nombre_residencia", "nombre", "business_name", "residencia"):
             col_map["business_name"] = col
         elif col in ("correo", "email", "mail", "correo electrónico", "correo electronico"):
             col_map["email"] = col
@@ -640,21 +642,25 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
         except (ValueError, TypeError):
             return 0
 
-    # Pre-fetch all existing emails to avoid per-row queries
+    # Pre-fetch all existing emails and codigos to avoid per-row queries
     all_emails_in_csv = set()
+    all_codigos_in_csv = set()
     rows_data = []
     for _, row in df.iterrows():
         bname = get_val(row, "business_name")
         if not bname:
             continue
         email = get_val(row, "email")
+        codigo = get_val(row, "codigo")
         short_id = uuid.uuid4().hex[:8]
         if not email:
             slug = bname.lower().replace(" ", "-")[:30]
             slug = "".join(c for c in slug if c.isalnum() or c == "-")
             email = f"{slug}-{short_id}@senioradvisor.cl"
         all_emails_in_csv.add(email)
-        rows_data.append((row, bname, email))
+        if codigo:
+            all_codigos_in_csv.add(codigo)
+        rows_data.append((row, bname, email, codigo))
 
     # Batch check existing emails
     existing_emails_docs = await db.users.find(
@@ -663,20 +669,41 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     ).to_list(len(all_emails_in_csv))
     existing_emails = {d["email"] for d in existing_emails_docs}
 
+    # Batch check existing codigos
+    existing_codigo_docs = []
+    if all_codigos_in_csv:
+        existing_codigo_docs = await db.providers.find(
+            {"codigo": {"$in": list(all_codigos_in_csv)}},
+            {"_id": 0, "codigo": 1, "user_id": 1, "provider_id": 1}
+        ).to_list(len(all_codigos_in_csv))
+    existing_codigo_map = {d["codigo"]: d["user_id"] for d in existing_codigo_docs}
+
     results = []
     users_to_insert = []
     providers_to_insert = []
     providers_to_update = []
     now = datetime.now(timezone.utc)
 
-    # Also fetch existing provider data for updates
+    # Also fetch existing provider data for updates by email
     existing_users_docs = await db.users.find(
         {"email": {"$in": list(all_emails_in_csv)}},
         {"_id": 0, "email": 1, "user_id": 1}
     ).to_list(len(all_emails_in_csv))
     existing_user_map = {d["email"]: d["user_id"] for d in existing_users_docs}
 
-    for row, bname, email in rows_data:
+    # Generate next codigo sequence
+    last_provider = await db.providers.find(
+        {"codigo": {"$exists": True, "$regex": "^SA-"}},
+        {"_id": 0, "codigo": 1}
+    ).sort("codigo", -1).to_list(1)
+    next_seq = 1
+    if last_provider:
+        try:
+            next_seq = int(last_provider[0]["codigo"].split("-")[1]) + 1
+        except (ValueError, IndexError):
+            next_seq = 1
+
+    for row, bname, email, codigo in rows_data:
         phone = get_val(row, "phone")
         whatsapp = get_val(row, "whatsapp") or phone
         address = get_val(row, "address")
@@ -761,7 +788,49 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             if price_from:
                 services.append({"service_type": service_type, "price_from": price_from, "description": ""})
 
-        if email in existing_emails:
+        if codigo and codigo in existing_codigo_map:
+            # UPDATE by codigo
+            existing_uid = existing_codigo_map[codigo]
+
+            update_fields = {"business_name": bname}
+            if phone: update_fields["phone"] = phone
+            if whatsapp: update_fields["whatsapp"] = whatsapp
+            if address: update_fields["address"] = address
+            if comuna: update_fields["comuna"] = comuna
+            if region: update_fields["region"] = region
+            if description: update_fields["description"] = description
+            if services: update_fields["services"] = services
+            if gallery: update_fields["gallery"] = gallery
+            if premium_gallery: update_fields["premium_gallery"] = premium_gallery
+            if amenities: update_fields["amenities"] = amenities
+            if social_links: update_fields["social_links"] = social_links
+            if latitude: update_fields["latitude"] = latitude
+            if longitude: update_fields["longitude"] = longitude
+            if place_id: update_fields["place_id"] = place_id
+            if video: update_fields["youtube_video_url"] = video
+            if housing_type and housing_type != "residencia":
+                update_fields.setdefault("personal_info", {})["housing_type"] = housing_type
+            if disponibilidad:
+                update_fields.setdefault("personal_info", {})["daily_availability"] = disponibilidad
+            if bio:
+                update_fields.setdefault("personal_info", {})["bio"] = bio
+            if rating: update_fields["rating"] = rating
+            if total_reviews: update_fields["total_reviews"] = total_reviews
+            if logo and logo.startswith("http"): update_fields["profile_photo"] = logo
+            elif gallery: update_fields["profile_photo"] = gallery[0]["url"]
+
+            providers_to_update.append({"user_id": existing_uid, "update": update_fields})
+            await db.users.update_one({"user_id": existing_uid}, {"$set": {"name": bname}})
+
+            results.append({
+                "business_name": bname,
+                "codigo": codigo,
+                "email": email,
+                "status": "updated"
+            })
+            continue
+
+        elif email in existing_emails:
             # UPDATE existing provider
             existing_uid = existing_user_map.get(email)
             if not existing_uid:
@@ -809,6 +878,8 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
         password = generate_password()
         user_id = str(uuid.uuid4())
         provider_id = str(uuid.uuid4())
+        new_codigo = f"SA-{next_seq:04d}"
+        next_seq += 1
 
         users_to_insert.append({
             "user_id": user_id,
@@ -823,6 +894,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
         providers_to_insert.append({
             "provider_id": provider_id,
             "user_id": user_id,
+            "codigo": new_codigo,
             "business_name": bname,
             "phone": phone,
             "whatsapp": whatsapp,
@@ -865,6 +937,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             "email": email,
             "password": password,
             "provider_id": provider_id,
+            "codigo": new_codigo,
             "status": "created"
         })
 
@@ -885,6 +958,135 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     updated = len([r for r in results if r["status"] == "updated"])
     errors = len([r for r in results if r["status"] == "error"])
     return {"total": len(results), "created": created, "updated": updated, "errors": errors, "results": results}
+
+
+@router.get("/residencias/export-csv")
+async def export_residencias_csv(request: Request):
+    """Export all providers as CSV with their codigo for re-upload/update"""
+    from fastapi.responses import StreamingResponse
+    user = await get_current_user(request, db)
+    await require_admin(user)
+
+    providers = await db.providers.find({}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+
+    # Assign codigos to providers that don't have one
+    next_seq = 1
+    last_with_code = await db.providers.find(
+        {"codigo": {"$exists": True, "$regex": "^SA-"}},
+        {"_id": 0, "codigo": 1}
+    ).sort("codigo", -1).to_list(1)
+    if last_with_code:
+        try:
+            next_seq = int(last_with_code[0]["codigo"].split("-")[1]) + 1
+        except (ValueError, IndexError):
+            next_seq = 1
+
+    for p in providers:
+        if not p.get("codigo"):
+            new_code = f"SA-{next_seq:04d}"
+            next_seq += 1
+            await db.providers.update_one(
+                {"provider_id": p["provider_id"]},
+                {"$set": {"codigo": new_code}}
+            )
+            p["codigo"] = new_code
+
+    # Fetch user emails
+    user_ids = [p.get("user_id") for p in providers if p.get("user_id")]
+    users_docs = await db.users.find(
+        {"user_id": {"$in": user_ids}},
+        {"_id": 0, "user_id": 1, "email": 1}
+    ).to_list(len(user_ids))
+    user_email_map = {u["user_id"]: u["email"] for u in users_docs}
+
+    import csv
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    headers = [
+        "codigo", "nombre", "email", "telefono", "whatsapp", "direccion", "comuna", "region",
+        "descripcion", "tipo", "tipo_instalacion", "horario_atencion", "bio", "youtube",
+        "place_id", "precio_residencias", "desc_residencias", "precio_cuidado_domicilio",
+        "desc_cuidado_domicilio", "precio_salud_mental", "desc_salud_mental", "amenidades",
+        "website", "facebook", "instagram", "rating", "cant_resenas",
+        "latitud", "longitud", "imagen_1", "imagen_2", "imagen_3"
+    ]
+    writer.writerow(headers)
+
+    for p in providers:
+        email = user_email_map.get(p.get("user_id"), "")
+        services = p.get("services", [])
+        # Extract prices per service type
+        precio_res = ""
+        desc_res = ""
+        precio_dom = ""
+        desc_dom = ""
+        precio_sal = ""
+        desc_sal = ""
+        for svc in services:
+            st = svc.get("service_type", "")
+            if st == "residencias":
+                precio_res = svc.get("price_from", 0) or ""
+                desc_res = svc.get("description", "")
+            elif st == "cuidado-domicilio":
+                precio_dom = svc.get("price_from", 0) or ""
+                desc_dom = svc.get("description", "")
+            elif st == "salud-mental":
+                precio_sal = svc.get("price_from", 0) or ""
+                desc_sal = svc.get("description", "")
+
+        social = p.get("social_links", {})
+        personal = p.get("personal_info", {})
+        gallery = p.get("gallery", [])
+        amenities_str = ",".join(p.get("amenities", []))
+
+        def get_gallery_url(gallery, idx):
+            if len(gallery) <= idx:
+                return ""
+            item = gallery[idx]
+            if isinstance(item, dict):
+                return item.get("url", "")
+            return str(item) if item else ""
+
+        row = [
+            p.get("codigo", ""),
+            p.get("business_name", ""),
+            email,
+            p.get("phone", ""),
+            p.get("whatsapp", ""),
+            p.get("address", ""),
+            p.get("comuna", ""),
+            p.get("region", ""),
+            p.get("description", ""),
+            services[0].get("service_type", "residencias") if services else "residencias",
+            personal.get("housing_type", ""),
+            personal.get("daily_availability", ""),
+            personal.get("bio", ""),
+            p.get("youtube_video_url", "") or social.get("video", ""),
+            p.get("place_id", ""),
+            precio_res, desc_res,
+            precio_dom, desc_dom,
+            precio_sal, desc_sal,
+            amenities_str,
+            social.get("website", ""),
+            social.get("facebook", ""),
+            social.get("instagram", ""),
+            p.get("rating", 0),
+            p.get("total_reviews", 0),
+            p.get("latitude", 0),
+            p.get("longitude", 0),
+            get_gallery_url(gallery, 0),
+            get_gallery_url(gallery, 1),
+            get_gallery_url(gallery, 2),
+        ]
+        writer.writerow(row)
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=residencias_export.csv"}
+    )
 
 
 
