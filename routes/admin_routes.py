@@ -652,6 +652,8 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             continue
         email = get_val(row, "email")
         codigo = get_val(row, "codigo")
+        if codigo and codigo.upper() in ("#N/A", "N/A", "NA", "NULL", "NONE", "-"):
+            codigo = ""
         short_id = uuid.uuid4().hex[:8]
         if not email:
             slug = bname.lower().replace(" ", "-")[:30]
@@ -682,6 +684,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     users_to_insert = []
     providers_to_insert = []
     providers_to_update = []
+    users_to_update = []
     now = datetime.now(timezone.utc)
 
     # Also fetch existing provider data for updates by email
@@ -820,7 +823,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             elif gallery: update_fields["profile_photo"] = gallery[0]["url"]
 
             providers_to_update.append({"user_id": existing_uid, "update": update_fields})
-            await db.users.update_one({"user_id": existing_uid}, {"$set": {"name": bname}})
+            users_to_update.append({"user_id": existing_uid, "name": bname})
 
             results.append({
                 "business_name": bname,
@@ -865,7 +868,7 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
             elif gallery: update_fields["profile_photo"] = gallery[0]["url"]
 
             providers_to_update.append({"user_id": existing_uid, "update": update_fields})
-            await db.users.update_one({"user_id": existing_uid}, {"$set": {"name": bname}})
+            users_to_update.append({"user_id": existing_uid, "name": bname})
 
             results.append({
                 "business_name": bname,
@@ -947,12 +950,14 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     if providers_to_insert:
         await db.providers.insert_many(providers_to_insert)
 
-    # Execute provider updates
-    for upd in providers_to_update:
-        await db.providers.update_one(
-            {"user_id": upd["user_id"]},
-            {"$set": upd["update"]}
-        )
+    # Batch update providers using bulk_write
+    from pymongo import UpdateOne
+    if providers_to_update:
+        provider_ops = [UpdateOne({"user_id": upd["user_id"]}, {"$set": upd["update"]}) for upd in providers_to_update]
+        await db.providers.bulk_write(provider_ops, ordered=False)
+    if users_to_update:
+        user_ops = [UpdateOne({"user_id": u["user_id"]}, {"$set": {"name": u["name"]}}) for u in users_to_update]
+        await db.users.bulk_write(user_ops, ordered=False)
 
     created = len([r for r in results if r["status"] == "created"])
     updated = len([r for r in results if r["status"] == "updated"])
