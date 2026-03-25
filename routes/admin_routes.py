@@ -1147,26 +1147,22 @@ async def admin_upload_gallery(provider_id: str, request: Request, file: UploadF
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
 
-    contents = await file.read()
     current_gallery = provider.get("gallery", [])
     if len(current_gallery) >= 3:
         raise HTTPException(status_code=400, detail="Máximo 3 fotos")
 
-    from pathlib import Path
-    from routes.provider_routes import compress_image, GALLERY_DIR
-    compressed_data, thumbnail_data = compress_image(contents)
-    photo_id = f"gallery_{uuid.uuid4().hex[:12]}"
-    main_path = GALLERY_DIR / f"{photo_id}.jpg"
-    thumb_path = GALLERY_DIR / f"{photo_id}_thumb.jpg"
-    with open(main_path, "wb") as f:
-        f.write(compressed_data)
-    with open(thumb_path, "wb") as f:
-        f.write(thumbnail_data)
+    import cloudinary.uploader
+    contents = await file.read()
+    result = cloudinary.uploader.upload(
+        contents,
+        folder=f"providers/{provider_id}/gallery",
+        transformation=[{"quality": "auto", "fetch_format": "auto", "width": 800, "crop": "limit"}]
+    )
 
     photo_record = {
-        "photo_id": photo_id,
-        "url": f"/api/uploads/gallery/{photo_id}.jpg",
-        "thumbnail_url": f"/api/uploads/gallery/{photo_id}_thumb.jpg",
+        "photo_id": result["public_id"],
+        "url": result["secure_url"],
+        "thumbnail_url": result["secure_url"].replace("/upload/", "/upload/w_300,h_200,c_fill,q_auto,f_auto/"),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.providers.update_one(
@@ -1176,7 +1172,7 @@ async def admin_upload_gallery(provider_id: str, request: Request, file: UploadF
     return {"message": "Foto subida", "photo": photo_record}
 
 
-@router.delete("/providers/{provider_id}/gallery/{photo_id}")
+@router.delete("/providers/{provider_id}/gallery/{photo_id:path}")
 async def admin_delete_gallery(provider_id: str, photo_id: str, request: Request):
     user = await get_current_user(request, db)
     await require_admin(user)
@@ -1184,6 +1180,13 @@ async def admin_delete_gallery(provider_id: str, photo_id: str, request: Request
     provider = await db.providers.find_one({"provider_id": provider_id})
     if not provider:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+
+    # Try delete from Cloudinary
+    try:
+        import cloudinary.uploader
+        cloudinary.uploader.destroy(photo_id, invalidate=True)
+    except Exception:
+        pass
 
     await db.providers.update_one(
         {"provider_id": provider_id},
@@ -1206,25 +1209,22 @@ async def admin_upload_premium_gallery(provider_id: str, request: Request, file:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
 
-    contents = await file.read()
     current_premium = provider.get("premium_gallery", [])
     if len(current_premium) >= 10:
         raise HTTPException(status_code=400, detail="Máximo 10 fotos en slider premium")
 
-    from routes.provider_routes import compress_image, PREMIUM_GALLERY_DIR
-    compressed_data, thumbnail_data = compress_image(contents)
-    photo_id = f"premium_{uuid.uuid4().hex[:12]}"
-    main_path = PREMIUM_GALLERY_DIR / f"{photo_id}.jpg"
-    thumb_path = PREMIUM_GALLERY_DIR / f"{photo_id}_thumb.jpg"
-    with open(main_path, "wb") as f:
-        f.write(compressed_data)
-    with open(thumb_path, "wb") as f:
-        f.write(thumbnail_data)
+    import cloudinary.uploader
+    contents = await file.read()
+    result = cloudinary.uploader.upload(
+        contents,
+        folder=f"providers/{provider_id}/premium",
+        transformation=[{"quality": "auto", "fetch_format": "auto", "width": 1200, "crop": "limit"}]
+    )
 
     photo_record = {
-        "photo_id": photo_id,
-        "url": f"/api/uploads/premium_gallery/{photo_id}.jpg",
-        "thumbnail_url": f"/api/uploads/premium_gallery/{photo_id}_thumb.jpg",
+        "photo_id": result["public_id"],
+        "url": result["secure_url"],
+        "thumbnail_url": result["secure_url"].replace("/upload/", "/upload/w_400,h_300,c_fill,q_auto,f_auto/"),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.providers.update_one(
@@ -1234,7 +1234,7 @@ async def admin_upload_premium_gallery(provider_id: str, request: Request, file:
     return {"message": "Foto premium subida", "photo": photo_record}
 
 
-@router.delete("/providers/{provider_id}/premium-gallery/{photo_id}")
+@router.delete("/providers/{provider_id}/premium-gallery/{photo_id:path}")
 async def admin_delete_premium_gallery(provider_id: str, photo_id: str, request: Request):
     user = await get_current_user(request, db)
     await require_admin(user)
@@ -1243,12 +1243,10 @@ async def admin_delete_premium_gallery(provider_id: str, photo_id: str, request:
     if not provider:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
 
-    from routes.provider_routes import PREMIUM_GALLERY_DIR
+    # Try delete from Cloudinary
     try:
-        for fname in [f"{photo_id}.jpg", f"{photo_id}_thumb.jpg"]:
-            fpath = PREMIUM_GALLERY_DIR / fname
-            if fpath.exists():
-                fpath.unlink()
+        import cloudinary.uploader
+        cloudinary.uploader.destroy(photo_id, invalidate=True)
     except Exception:
         pass
 
