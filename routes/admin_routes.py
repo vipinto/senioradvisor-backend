@@ -132,6 +132,34 @@ async def unverify_provider(provider_id: str, request: Request):
     return {"message": "Verificación removida"}
 
 
+
+@router.post("/providers/{provider_id}/toggle-featured")
+async def toggle_featured(provider_id: str, request: Request):
+    """Admin toggle featured status (bypasses rating restriction)"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    provider = await db.providers.find_one({"provider_id": provider_id}, {"_id": 0, "is_featured_admin": 1})
+    if not provider:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+    new_val = not provider.get("is_featured_admin", False)
+    await db.providers.update_one({"provider_id": provider_id}, {"$set": {"is_featured_admin": new_val}})
+    return {"is_featured_admin": new_val}
+
+
+@router.post("/providers/{provider_id}/toggle-subscribed")
+async def toggle_subscribed(provider_id: str, request: Request):
+    """Admin toggle subscribed status (bypasses rating restriction)"""
+    user = await get_current_user(request, db)
+    await require_admin(user)
+    provider = await db.providers.find_one({"provider_id": provider_id}, {"_id": 0, "is_subscribed": 1})
+    if not provider:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+    new_val = not provider.get("is_subscribed", False)
+    await db.providers.update_one({"provider_id": provider_id}, {"$set": {"is_subscribed": new_val}})
+    return {"is_subscribed": new_val}
+
+
+
 # ============= STATS & METRICS =============
 
 @router.get("/stats")
@@ -1267,6 +1295,9 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
                "personal_info", "latitude", "longitude", "is_featured", "is_subscribed",
                "service_type", "service_comunas", "walking_zones", "coverage_radius_km"]
     update = {k: v for k, v in body.items() if k in allowed}
+    # Map admin toggles to admin-specific fields
+    if "is_featured" in update:
+        update["is_featured_admin"] = update.pop("is_featured")
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
 
