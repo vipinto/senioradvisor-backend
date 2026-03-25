@@ -215,25 +215,6 @@ async def select_role(request: Request):
     return {"message": "Rol seleccionado", "user": updated_user}
 
 
-@router.put("/profile/update")
-async def update_profile(request: Request):
-    """Update current user's profile"""
-    user = await get_current_user(request, db)
-    data = await request.json()
-    
-    allowed_fields = ['name', 'phone', 'address', 'comuna', 'emergency_contact', 'emergency_phone', 
-                      'housing_type', 'has_yard', 'yard_description', 'has_own_pets', 
-                      'own_pets_description', 'additional_info']
-    update_data = {k: v for k, v in data.items() if k in allowed_fields}
-    
-    if update_data:
-        await db.users.update_one(
-            {"user_id": user["user_id"]},
-            {"$set": update_data}
-        )
-    
-    return {"message": "Perfil actualizado"}
-
 
 @router.post("/profile/photos")
 async def upload_client_photo(request: Request, file: UploadFile = File(...), photo_type: str = Form(...)):
@@ -411,3 +392,4 @@ async def register_provider_public(data: ProviderRegistrationRequest):
         "provider_id": provider_id,
         "status": "pending_approval"
     }
+

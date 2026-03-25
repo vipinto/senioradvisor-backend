@@ -134,6 +134,21 @@ async def upload_profile_photo(file: UploadFile = File(...), request: Request = 
     return {"url": photo_url}
 
 
+
+@router.put("/profile/update")
+async def update_profile(request: Request):
+    """Update current user's profile (any role)"""
+    user = await get_current_user(request, db)
+    data = await request.json()
+    allowed_fields = ['name', 'phone', 'address', 'comuna', 'emergency_contact', 'emergency_phone',
+                      'housing_type', 'has_yard', 'yard_description', 'has_own_pets',
+                      'own_pets_description', 'additional_info']
+    update_data = {k: v for k, v in data.items() if k in allowed_fields}
+    if update_data:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": update_data})
+    return {"message": "Perfil actualizado"}
+
+
 # ============= VERIFICATION DOCUMENTS =============
 
 @router.post("/verification/upload")
