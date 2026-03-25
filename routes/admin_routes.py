@@ -37,7 +37,7 @@ async def get_all_providers(request: Request):
     """Get all providers for admin"""
     user = await get_current_user(request, db)
     await require_admin(user)
-    providers = await db.providers.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    providers = await db.providers.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return providers
 
 
