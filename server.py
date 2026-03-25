@@ -22,6 +22,7 @@ from routes.care_request_routes import router as care_request_router
 from routes.contact_request_routes import router as contact_request_router
 from routes.blog_routes import router as blog_router
 from routes.partner_routes import router as partner_router
+from routes.cloudinary_routes import router as cloudinary_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -64,6 +65,7 @@ api_router.include_router(care_request_router)
 api_router.include_router(contact_request_router)
 api_router.include_router(blog_router)
 api_router.include_router(partner_router)
+api_router.include_router(cloudinary_router)
 
 
 @api_router.get("/")
@@ -74,6 +76,45 @@ async def root():
 @api_router.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "SeniorAdvisor"}
+
+
+@api_router.get("/diagnostics")
+async def diagnostics():
+    """Diagnostic endpoint to check backend dependencies and config"""
+    results = {}
+    
+    # Check bcrypt
+    try:
+        import bcrypt as bcrypt_check
+        test_hash = bcrypt_check.hashpw(b"test123", bcrypt_check.gensalt()).decode('utf-8')
+        verified = bcrypt_check.checkpw(b"test123", test_hash.encode('utf-8'))
+        results["bcrypt"] = {"status": "ok", "verify_works": verified, "version": getattr(bcrypt_check, '__version__', 'unknown')}
+    except Exception as e:
+        results["bcrypt"] = {"status": "error", "error": str(e)}
+    
+    # Check JWT
+    try:
+        import jwt
+        token = jwt.encode({"test": True}, "secret", algorithm="HS256")
+        results["pyjwt"] = {"status": "ok"}
+    except Exception as e:
+        results["pyjwt"] = {"status": "error", "error": str(e)}
+    
+    # Check DB connection
+    try:
+        user_count = await db.users.count_documents({})
+        results["database"] = {"status": "ok", "users_count": user_count}
+    except Exception as e:
+        results["database"] = {"status": "error", "error": str(e)}
+    
+    # Check env vars
+    results["env"] = {
+        "JWT_SECRET": "set" if os.environ.get("JWT_SECRET") else "MISSING",
+        "MONGO_URL": "set" if os.environ.get("MONGO_URL") else "MISSING",
+        "CORS_ORIGINS": os.environ.get("CORS_ORIGINS", "not set"),
+    }
+    
+    return results
 
 
 # Health check endpoints for K8s probes
