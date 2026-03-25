@@ -864,7 +864,8 @@ async def search_providers(
     import logging
     logging.info(f"Provider search query: {query}")
     
-    providers = await db.providers.find(query, {"_id": 0}).skip(skip).limit(limit).to_list(limit)
+    # Fetch ALL matching providers first, sort in Python, then paginate
+    providers = await db.providers.find(query, {"_id": 0}).to_list(2000)
     
     logging.info(f"Found {len(providers)} providers")
 
@@ -923,31 +924,38 @@ async def search_providers(
     for provider in providers:
         is_verified = provider.get("verified", False)
         is_subscribed = provider["user_id"] in subscribed_provider_user_ids
-        provider["is_featured"] = is_verified and is_subscribed
-        provider["is_verified_only"] = is_verified and not is_subscribed
+        admin_featured = provider.get("is_featured_admin", False)
+        admin_subscribed = provider.get("is_subscribed", False)
+        provider["is_featured"] = admin_featured
+        provider["provider_is_subscribed"] = admin_subscribed or is_subscribed
+        provider["is_verified_only"] = is_verified and not provider["is_featured"] and not provider["provider_is_subscribed"]
 
-        # Clientes ven toda la información sin restricción
-        # provider["phone"] = None
-        # provider["whatsapp"] = None
-        # provider["address"] = None
-        provider["full_name_hidden"] = False  # Siempre mostrar nombre completo
+        provider["full_name_hidden"] = False
 
     def sort_key(p):
-        if p.get("is_featured"):
-            return (0, -(p.get("rating") or 0))
-        elif p.get("is_verified_only"):
-            return (1, -(p.get("rating") or 0))
+        feat = p.get("is_featured", False)
+        subs = p.get("provider_is_subscribed", False)
+        rating = -(p.get("rating") or 0)
+        if feat and subs:
+            return (0, rating)
+        elif subs and not feat:
+            return (1, rating)
+        elif feat and not subs:
+            return (2, rating)
         else:
-            return (2, -(p.get("rating") or 0))
+            return (3, rating)
 
     providers.sort(key=sort_key)
 
-    # Filter featured only (with subscription) and minimum rating 4.0
+    # Filter featured only: admin-featured bypass rating, others need >= 4.0
     if featured:
-        providers = [p for p in providers if p.get("is_featured") and (p.get("rating") or 0) >= 4.0]
+        providers = [p for p in providers if p.get("is_featured") and (p.get("is_featured_admin") or (p.get("rating") or 0) >= 4.0)]
 
-    # Count total for pagination (re-run query without skip/limit)
-    total_count = await db.providers.count_documents(query)
+    # Total count after all filters
+    total_count = len(providers)
+
+    # Apply pagination AFTER sorting
+    providers = providers[skip:skip + limit]
 
     return {"results": providers, "total": total_count, "skip": skip, "limit": limit}
 
@@ -1156,15 +1164,10 @@ async def get_provider(provider_id: str, request: Request):
         {"_id": 0},
     )
     provider_is_subscribed = provider_sub is not None
-    # Admin override: if is_featured/is_subscribed stored in provider doc, use those
-    if "is_featured" in provider:
-        pass  # keep the stored value
-    else:
-        provider["is_featured"] = provider.get("verified", False) and provider_is_subscribed
-    if "is_subscribed" in provider:
-        provider["provider_is_subscribed"] = provider["is_subscribed"]
-    else:
-        provider["provider_is_subscribed"] = provider_is_subscribed
+    admin_featured = provider.get("is_featured_admin", False)
+    admin_subscribed = provider.get("is_subscribed", False)
+    provider["is_featured"] = admin_featured or (provider.get("verified", False) and (provider_is_subscribed or admin_subscribed))
+    provider["provider_is_subscribed"] = admin_subscribed or provider_is_subscribed
     provider["viewer_has_subscription"] = True  # Clientes siempre ven todo
     provider["viewer_is_connected"] = is_connected
     provider["viewer_has_pending_request"] = has_pending_request
