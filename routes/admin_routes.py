@@ -666,17 +666,17 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     results = []
     users_to_insert = []
     providers_to_insert = []
+    providers_to_update = []
     now = datetime.now(timezone.utc)
 
+    # Also fetch existing provider data for updates
+    existing_users_docs = await db.users.find(
+        {"email": {"$in": list(all_emails_in_csv)}},
+        {"_id": 0, "email": 1, "user_id": 1}
+    ).to_list(len(all_emails_in_csv))
+    existing_user_map = {d["email"]: d["user_id"] for d in existing_users_docs}
+
     for row, bname, email in rows_data:
-        if email in existing_emails:
-            results.append({"business_name": bname, "email": email, "status": "error", "detail": "Email ya registrado"})
-            continue
-
-        password = generate_password()
-        user_id = str(uuid.uuid4())
-        provider_id = str(uuid.uuid4())
-
         phone = get_val(row, "phone")
         whatsapp = get_val(row, "whatsapp") or phone
         address = get_val(row, "address")
@@ -737,7 +737,6 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
         service_type_raw = get_val(row, "service_type")
         price_from = parse_int(get_val(row, "price_from"))
 
-        # Build services from individual category columns or fallback to single type/price
         services = []
         p_res = parse_int(get_val(row, "precio_residencias"))
         d_res = get_val(row, "desc_residencias")
@@ -751,7 +750,6 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
         d_sal = get_val(row, "desc_salud_mental")
         if p_sal or d_sal:
             services.append({"service_type": "salud-mental", "price_from": p_sal, "description": d_sal})
-        # Fallback: if no individual columns, use legacy tipo/precio
         if not services:
             service_type = "residencias"
             if service_type_raw:
@@ -762,6 +760,55 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
                     service_type = "salud-mental"
             if price_from:
                 services.append({"service_type": service_type, "price_from": price_from, "description": ""})
+
+        if email in existing_emails:
+            # UPDATE existing provider
+            existing_uid = existing_user_map.get(email)
+            if not existing_uid:
+                results.append({"business_name": bname, "email": email, "status": "error", "detail": "Usuario existe pero no se encontro user_id"})
+                continue
+
+            update_fields = {"business_name": bname}
+            if phone: update_fields["phone"] = phone
+            if whatsapp: update_fields["whatsapp"] = whatsapp
+            if address: update_fields["address"] = address
+            if comuna: update_fields["comuna"] = comuna
+            if region: update_fields["region"] = region
+            if description: update_fields["description"] = description
+            if services: update_fields["services"] = services
+            if gallery: update_fields["gallery"] = gallery
+            if premium_gallery: update_fields["premium_gallery"] = premium_gallery
+            if amenities: update_fields["amenities"] = amenities
+            if social_links: update_fields["social_links"] = social_links
+            if latitude: update_fields["latitude"] = latitude
+            if longitude: update_fields["longitude"] = longitude
+            if place_id: update_fields["place_id"] = place_id
+            if video: update_fields["youtube_video_url"] = video
+            if housing_type and housing_type != "residencia":
+                update_fields.setdefault("personal_info", {})["housing_type"] = housing_type
+            if disponibilidad:
+                update_fields.setdefault("personal_info", {})["daily_availability"] = disponibilidad
+            if bio:
+                update_fields.setdefault("personal_info", {})["bio"] = bio
+            if rating: update_fields["rating"] = rating
+            if total_reviews: update_fields["total_reviews"] = total_reviews
+            if logo and logo.startswith("http"): update_fields["profile_photo"] = logo
+            elif gallery: update_fields["profile_photo"] = gallery[0]["url"]
+
+            providers_to_update.append({"user_id": existing_uid, "update": update_fields})
+            await db.users.update_one({"user_id": existing_uid}, {"$set": {"name": bname}})
+
+            results.append({
+                "business_name": bname,
+                "email": email,
+                "status": "updated"
+            })
+            continue
+
+        # Generate credentials for NEW provider
+        password = generate_password()
+        user_id = str(uuid.uuid4())
+        provider_id = str(uuid.uuid4())
 
         users_to_insert.append({
             "user_id": user_id,
@@ -827,9 +874,17 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
     if providers_to_insert:
         await db.providers.insert_many(providers_to_insert)
 
+    # Execute provider updates
+    for upd in providers_to_update:
+        await db.providers.update_one(
+            {"user_id": upd["user_id"]},
+            {"$set": upd["update"]}
+        )
+
     created = len([r for r in results if r["status"] == "created"])
+    updated = len([r for r in results if r["status"] == "updated"])
     errors = len([r for r in results if r["status"] == "error"])
-    return {"total": len(results), "created": created, "errors": errors, "results": results}
+    return {"total": len(results), "created": created, "updated": updated, "errors": errors, "results": results}
 
 
 
