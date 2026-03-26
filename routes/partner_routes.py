@@ -3,7 +3,10 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timezone
 import uuid
+import asyncio
+import os
 from database import db
+from email_service import send_email
 
 router = APIRouter(prefix="/partners", tags=["partners"])
 
@@ -25,6 +28,7 @@ class ConvenioCreate(BaseModel):
     featured: bool = False
     active: bool = True
     discount_code: Optional[str] = ""
+    contact_email: Optional[str] = ""
 
 class ConvenioUpdate(BaseModel):
     name: Optional[str] = None
@@ -35,6 +39,7 @@ class ConvenioUpdate(BaseModel):
     featured: Optional[bool] = None
     active: Optional[bool] = None
     discount_code: Optional[str] = None
+    contact_email: Optional[str] = None
 
 @router.get("/convenios")
 async def get_convenios(active_only: bool = True):
@@ -56,6 +61,7 @@ async def create_convenio(data: ConvenioCreate):
         "featured": data.featured,
         "active": data.active,
         "discount_code": data.discount_code or "",
+        "contact_email": data.contact_email or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.convenios.insert_one(convenio)
@@ -109,6 +115,26 @@ async def create_lead(data: PartnerLeadCreate):
     }
     await db.partner_leads.insert_one(lead)
     del lead["_id"]
+
+    # Send email to convenio partner if configured
+    convenio = await db.convenios.find_one({"slug": data.partner_slug}, {"_id": 0})
+    if convenio and convenio.get("contact_email"):
+        convenio_name = convenio.get("name", data.partner_slug)
+        partner_html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+          <h2 style="color:#33404f;">Nueva solicitud desde SeniorAdvisor</h2>
+          <p>Una persona está interesada en sus servicios a través de SeniorClub:</p>
+          <table style="width:100%;border-collapse:collapse;">
+            <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Nombre</td><td style="padding:8px;border-bottom:1px solid #eee;">{data.name}</td></tr>
+            <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Email</td><td style="padding:8px;border-bottom:1px solid #eee;">{data.email}</td></tr>
+            <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Teléfono</td><td style="padding:8px;border-bottom:1px solid #eee;">{data.phone}</td></tr>
+            <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Plan de interés</td><td style="padding:8px;border-bottom:1px solid #eee;">{data.plan_interest or '-'}</td></tr>
+          </table>
+          <p style="color:#999;font-size:12px;margin-top:20px;">Enviado desde SeniorAdvisor.cl</p>
+        </div>
+        """
+        asyncio.create_task(send_email(convenio["contact_email"], f"Nueva solicitud SeniorAdvisor - {data.name}", partner_html))
+
     return lead
 
 @router.get("/leads")
