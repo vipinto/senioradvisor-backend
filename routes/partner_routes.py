@@ -24,6 +24,7 @@ class ConvenioCreate(BaseModel):
     plans: List[PlanModel] = []
     featured: bool = False
     active: bool = True
+    discount_code: Optional[str] = ""
 
 class ConvenioUpdate(BaseModel):
     name: Optional[str] = None
@@ -33,6 +34,7 @@ class ConvenioUpdate(BaseModel):
     plans: Optional[List[PlanModel]] = None
     featured: Optional[bool] = None
     active: Optional[bool] = None
+    discount_code: Optional[str] = None
 
 @router.get("/convenios")
 async def get_convenios(active_only: bool = True):
@@ -53,6 +55,7 @@ async def create_convenio(data: ConvenioCreate):
         "plans": [p.dict() for p in data.plans],
         "featured": data.featured,
         "active": data.active,
+        "discount_code": data.discount_code or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.convenios.insert_one(convenio)
