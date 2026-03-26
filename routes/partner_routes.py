@@ -17,6 +17,7 @@ class PlanModel(BaseModel):
     category: str
     price: str
     uf: str
+    currency: Optional[str] = "UF"
 
 class ConvenioCreate(BaseModel):
     name: str
@@ -29,6 +30,7 @@ class ConvenioCreate(BaseModel):
     active: bool = True
     discount_code: Optional[str] = ""
     contact_email: Optional[str] = ""
+    website: Optional[str] = ""
 
 class ConvenioUpdate(BaseModel):
     name: Optional[str] = None
@@ -40,6 +42,7 @@ class ConvenioUpdate(BaseModel):
     active: Optional[bool] = None
     discount_code: Optional[str] = None
     contact_email: Optional[str] = None
+    website: Optional[str] = None
 
 @router.get("/convenios")
 async def get_convenios(active_only: bool = True):
@@ -62,6 +65,7 @@ async def create_convenio(data: ConvenioCreate):
         "active": data.active,
         "discount_code": data.discount_code or "",
         "contact_email": data.contact_email or "",
+        "website": data.website or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.convenios.insert_one(convenio)
