@@ -23,6 +23,7 @@ class PlanModel(BaseModel):
     uf: str
     currency: Optional[str] = "UF"
     popular: Optional[bool] = False
+    description: Optional[str] = ""
 
 class ConvenioCreate(BaseModel):
     name: str
