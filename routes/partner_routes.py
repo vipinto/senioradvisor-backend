@@ -12,6 +12,10 @@ router = APIRouter(prefix="/partners", tags=["partners"])
 
 # --- Convenios CRUD ---
 
+class ServiceCategory(BaseModel):
+    name: str
+    items: List[str] = []
+
 class PlanModel(BaseModel):
     name: str
     category: str
@@ -32,6 +36,7 @@ class ConvenioCreate(BaseModel):
     discount_code: Optional[str] = ""
     contact_email: Optional[str] = ""
     website: Optional[str] = ""
+    services: List[ServiceCategory] = []
 
 class ConvenioUpdate(BaseModel):
     name: Optional[str] = None
@@ -44,6 +49,7 @@ class ConvenioUpdate(BaseModel):
     discount_code: Optional[str] = None
     contact_email: Optional[str] = None
     website: Optional[str] = None
+    services: Optional[List[ServiceCategory]] = None
 
 @router.get("/convenios")
 async def get_convenios(active_only: bool = True):
@@ -67,6 +73,7 @@ async def create_convenio(data: ConvenioCreate):
         "discount_code": data.discount_code or "",
         "contact_email": data.contact_email or "",
         "website": data.website or "",
+        "services": [s.dict() for s in data.services],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.convenios.insert_one(convenio)
