@@ -29,7 +29,7 @@ async def send_email(
     
     try:
         params = {
-            "from": from_email or FALLBACK_FROM_EMAIL,
+            "from": from_email or DEFAULT_FROM_EMAIL,
             "to": [to],
             "subject": subject,
             "html": html

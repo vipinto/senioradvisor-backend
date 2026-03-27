@@ -18,6 +18,7 @@ class PlanModel(BaseModel):
     price: str
     uf: str
     currency: Optional[str] = "UF"
+    popular: Optional[bool] = False
 
 class ConvenioCreate(BaseModel):
     name: str
@@ -120,7 +121,7 @@ async def create_lead(data: PartnerLeadCreate):
     await db.partner_leads.insert_one(lead)
     del lead["_id"]
 
-    # Send email to convenio partner if configured
+    # Send email to convenio partners if configured
     convenio = await db.convenios.find_one({"slug": data.partner_slug}, {"_id": 0})
     if convenio and convenio.get("contact_email"):
         convenio_name = convenio.get("name", data.partner_slug)
@@ -137,7 +138,9 @@ async def create_lead(data: PartnerLeadCreate):
           <p style="color:#999;font-size:12px;margin-top:20px;">Enviado desde SeniorAdvisor.cl</p>
         </div>
         """
-        asyncio.create_task(send_email(convenio["contact_email"], f"Nueva solicitud SeniorAdvisor - {data.name}", partner_html))
+        emails = [e.strip() for e in convenio["contact_email"].split(",") if e.strip()]
+        for email_addr in emails:
+            asyncio.create_task(send_email(email_addr, f"Nueva solicitud SeniorAdvisor - {data.name}", partner_html))
 
     return lead
 
