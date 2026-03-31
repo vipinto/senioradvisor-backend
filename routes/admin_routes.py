@@ -965,8 +965,8 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
     if not provider:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
 
-    allowed = ["business_name", "phone", "address", "region", "comuna", "place_id",
-               "social_links", "services", "amenities", "description"]
+    allowed = ["business_name", "phone", "whatsapp", "address", "region", "comuna", "place_id",
+               "social_links", "services", "amenities", "description", "personal_info"]
     update = {k: v for k, v in body.items() if k in allowed}
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
