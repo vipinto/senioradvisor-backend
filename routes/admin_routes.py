@@ -893,8 +893,8 @@ async def admin_upload_gallery(provider_id: str, request: Request, file: UploadF
 
     contents = await file.read()
     current_gallery = provider.get("gallery", [])
-    if len(current_gallery) >= 10:
-        raise HTTPException(status_code=400, detail="Máximo 10 fotos")
+    if len(current_gallery) >= 3:
+        raise HTTPException(status_code=400, detail="Máximo 3 fotos en galería estándar")
 
     from pathlib import Path
     from routes.provider_routes import compress_image, GALLERY_DIR
@@ -936,6 +936,63 @@ async def admin_delete_gallery(provider_id: str, photo_id: str, request: Request
     return {"message": "Foto eliminada"}
 
 
+@router.post("/providers/{provider_id}/slider/upload")
+async def admin_upload_slider(provider_id: str, request: Request, file: UploadFile = File(...)):
+    user = await get_current_user(request, db)
+    await require_admin(user)
+
+    provider = await db.providers.find_one({"provider_id": provider_id})
+    if not provider:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
+
+    contents = await file.read()
+    current_slider = provider.get("slider_photos", [])
+    if len(current_slider) >= 10:
+        raise HTTPException(status_code=400, detail="Máximo 10 fotos en slider premium")
+
+    from pathlib import Path
+    from routes.provider_routes import compress_image, SLIDER_DIR
+    compressed_data, thumbnail_data = compress_image(contents)
+    photo_id = f"slider_{uuid.uuid4().hex[:12]}"
+    main_path = SLIDER_DIR / f"{photo_id}.jpg"
+    thumb_path = SLIDER_DIR / f"{photo_id}_thumb.jpg"
+    with open(main_path, "wb") as f:
+        f.write(compressed_data)
+    with open(thumb_path, "wb") as f:
+        f.write(thumbnail_data)
+
+    photo_record = {
+        "photo_id": photo_id,
+        "url": f"/api/uploads/slider/{photo_id}.jpg",
+        "thumbnail_url": f"/api/uploads/slider/{photo_id}_thumb.jpg",
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.providers.update_one(
+        {"provider_id": provider_id},
+        {"$push": {"slider_photos": photo_record}},
+    )
+    return {"message": "Foto del slider subida", "photo": photo_record}
+
+
+@router.delete("/providers/{provider_id}/slider/{photo_id}")
+async def admin_delete_slider(provider_id: str, photo_id: str, request: Request):
+    user = await get_current_user(request, db)
+    await require_admin(user)
+
+    provider = await db.providers.find_one({"provider_id": provider_id})
+    if not provider:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+
+    await db.providers.update_one(
+        {"provider_id": provider_id},
+        {"$pull": {"slider_photos": {"photo_id": photo_id}}},
+    )
+    return {"message": "Foto del slider eliminada"}
+
+
 @router.put("/providers/{provider_id}/amenities")
 async def admin_update_amenities(provider_id: str, request: Request):
     user = await get_current_user(request, db)
@@ -966,7 +1023,8 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
 
     allowed = ["business_name", "phone", "whatsapp", "address", "region", "comuna", "place_id",
-               "social_links", "services", "amenities", "description", "personal_info"]
+               "social_links", "services", "amenities", "description", "personal_info",
+               "youtube_video_url", "is_featured", "is_subscribed"]
     update = {k: v for k, v in body.items() if k in allowed}
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
