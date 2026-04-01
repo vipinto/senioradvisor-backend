@@ -385,6 +385,7 @@ class ResidenciaCreate(BaseModel):
     service_type: Optional[str] = "residencias"
     price_from: Optional[int] = 0
     services: Optional[list] = None
+    partner_provider_id: Optional[str] = ""
 
 def generate_password(length=10):
     chars = string.ascii_letters + string.digits
@@ -401,25 +402,36 @@ async def create_residencia(data: ResidenciaCreate, request: Request):
     user = await get_current_user(request, db)
     await require_admin(user)
     
-    existing = await db.users.find_one({"email": data.email})
-    if existing:
-        raise HTTPException(status_code=400, detail=f"El email {data.email} ya está registrado")
+    # Check for partner or existing user
+    existing = None
+    if data.partner_provider_id:
+        partner = await db.providers.find_one({"provider_id": data.partner_provider_id})
+        if partner:
+            existing = await db.users.find_one({"user_id": partner["user_id"]})
+            if not data.email:
+                data.email = existing["email"] if existing else ""
     
-    password = data.password or generate_password()
-    user_id = str(uuid.uuid4())
+    if not existing:
+        existing = await db.users.find_one({"email": data.email})
+    
     provider_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     
-    user = {
-        "user_id": user_id,
-        "email": data.email,
-        "name": data.business_name,
-        "role": "provider",
-        "hashed_password": _hash_password(password),
-        "created_at": now.isoformat(),
-        "active": True,
-    }
-    await db.users.insert_one(user)
+    if existing:
+        user_id = existing["user_id"]
+    else:
+        password = data.password or generate_password()
+        user_id = str(uuid.uuid4())
+        user = {
+            "user_id": user_id,
+            "email": data.email,
+            "name": data.business_name,
+            "role": "provider",
+            "hashed_password": _hash_password(password),
+            "created_at": now.isoformat(),
+            "active": True,
+        }
+        await db.users.insert_one(user)
     
     provider = {
         "provider_id": provider_id,
@@ -478,14 +490,18 @@ async def create_residencia(data: ResidenciaCreate, request: Request):
         except Exception as e:
             logging.error(f"Error fetching Google data for {data.business_name}: {e}")
     
-    return {
+    result = {
         "provider_id": provider_id,
         "user_id": user_id,
         "business_name": data.business_name,
         "email": data.email,
-        "password": password,
         "status": "created"
     }
+    if existing:
+        result["note"] = "Nueva sede agregada a empresa existente"
+    else:
+        result["password"] = password
+    return result
 
 class BulkResidenciaItem(BaseModel):
     business_name: str
