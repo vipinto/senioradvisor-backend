@@ -518,8 +518,8 @@ async def upload_gallery_photo(request: Request, file: UploadFile = File(...)):
     original_size = len(contents)
 
     current_gallery = provider.get("gallery", [])
-    if len(current_gallery) >= 3:
-        raise HTTPException(status_code=400, detail="Máximo 3 fotos en la galería estándar")
+    if len(current_gallery) >= 10:
+        raise HTTPException(status_code=400, detail="Máximo 10 fotos en la galería")
 
     try:
         compressed_data, thumbnail_data = compress_image(contents)
@@ -646,120 +646,6 @@ async def reorder_gallery(request: Request):
     )
 
     return {"message": "Galería reordenada", "gallery": new_gallery}
-
-
-
-# ======= SLIDER PREMIUM ENDPOINTS =======
-
-SLIDER_DIR = UPLOADS_DIR / "slider"
-SLIDER_DIR.mkdir(parents=True, exist_ok=True)
-
-
-@router.post("/providers/slider/upload")
-async def upload_slider_photo(request: Request, file: UploadFile = File(...)):
-    """Upload a photo to provider's premium slider (max 10, premium only)"""
-    user = await get_current_user(request, db)
-    provider = await db.providers.find_one({"user_id": user["user_id"]})
-    if not provider:
-        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
-
-    if not provider.get("is_featured") and not provider.get("verified"):
-        raise HTTPException(status_code=403, detail="Solo proveedores premium pueden usar el slider")
-
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
-
-    contents = await file.read()
-    original_size = len(contents)
-
-    current_slider = provider.get("slider_photos", [])
-    if len(current_slider) >= 10:
-        raise HTTPException(status_code=400, detail="Máximo 10 fotos en el slider premium")
-
-    try:
-        compressed_data, thumbnail_data = compress_image(contents)
-        compressed_size = len(compressed_data)
-
-        photo_id = f"slider_{uuid.uuid4().hex[:12]}"
-        main_filename = f"{photo_id}.jpg"
-        thumb_filename = f"{photo_id}_thumb.jpg"
-
-        main_path = SLIDER_DIR / main_filename
-        thumb_path = SLIDER_DIR / thumb_filename
-
-        with open(main_path, "wb") as f:
-            f.write(compressed_data)
-        with open(thumb_path, "wb") as f:
-            f.write(thumbnail_data)
-
-        photo_record = {
-            "photo_id": photo_id,
-            "url": f"/api/uploads/slider/{main_filename}",
-            "thumbnail_url": f"/api/uploads/slider/{thumb_filename}",
-            "original_size_kb": round(original_size / 1024, 1),
-            "compressed_size_kb": round(compressed_size / 1024, 1),
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        await db.providers.update_one(
-            {"provider_id": provider["provider_id"]},
-            {"$push": {"slider_photos": photo_record}},
-        )
-
-        return {"message": "Foto del slider subida", "photo": photo_record}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al procesar imagen: {str(e)}")
-
-
-@router.delete("/providers/slider/{photo_id}")
-async def delete_slider_photo(photo_id: str, request: Request):
-    """Delete a photo from provider's premium slider"""
-    user = await get_current_user(request, db)
-    provider = await db.providers.find_one({"user_id": user["user_id"]})
-    if not provider:
-        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
-
-    slider = provider.get("slider_photos", [])
-    photo_to_delete = None
-    for photo in slider:
-        if photo["photo_id"] == photo_id:
-            photo_to_delete = photo
-            break
-
-    if not photo_to_delete:
-        raise HTTPException(status_code=404, detail="Foto no encontrada en slider")
-
-    try:
-        main_file = SLIDER_DIR / f"{photo_id}.jpg"
-        thumb_file = SLIDER_DIR / f"{photo_id}_thumb.jpg"
-        if main_file.exists():
-            main_file.unlink()
-        if thumb_file.exists():
-            thumb_file.unlink()
-    except Exception:
-        pass
-
-    await db.providers.update_one(
-        {"provider_id": provider["provider_id"]},
-        {"$pull": {"slider_photos": {"photo_id": photo_id}}},
-    )
-
-    return {"message": "Foto del slider eliminada"}
-
-
-@router.get("/providers/slider")
-async def get_my_slider(request: Request):
-    """Get current provider's slider photos"""
-    user = await get_current_user(request, db)
-    provider = await db.providers.find_one(
-        {"user_id": user["user_id"]},
-        {"_id": 0, "slider_photos": 1},
-    )
-    if not provider:
-        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
-    return provider.get("slider_photos", [])
-
 
 
 @router.get("/providers")

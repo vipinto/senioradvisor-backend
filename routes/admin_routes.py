@@ -2,16 +2,12 @@ from fastapi import APIRouter, Request, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone
-import uuid
-import random
-import string
-import io
+import uuid, random, string, io
 from passlib.hash import bcrypt
 
 from database import db
 from auth import get_current_user, require_admin
 from routes.notification_routes import create_notification
-from google_places_service import fetch_place_details
 
 router = APIRouter(prefix="/admin")
 
@@ -40,7 +36,7 @@ async def get_all_providers(request: Request):
     """Get all providers for admin"""
     user = await get_current_user(request, db)
     await require_admin(user)
-    providers = await db.providers.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    providers = await db.providers.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return providers
 
 
@@ -360,12 +356,6 @@ class ResidenciaCreate(BaseModel):
     service_type: Optional[str] = "residencias"
     price_from: Optional[int] = 0
     services: Optional[list] = None
-    # Google Places data (sent from frontend)
-    latitude: Optional[float] = 0
-    longitude: Optional[float] = 0
-    google_rating: Optional[float] = 0
-    google_total_reviews: Optional[int] = 0
-    google_reviews: Optional[list] = None
 
 def generate_password(length=10):
     chars = string.ascii_letters + string.digits
@@ -388,25 +378,7 @@ async def create_residencia(data: ResidenciaCreate, request: Request):
     provider_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     
-    # Use Google data from frontend or try backend fetch as fallback
-    latitude = data.latitude or 0
-    longitude = data.longitude or 0
-    google_rating = data.google_rating or 0
-    google_total_reviews = data.google_total_reviews or 0
-    google_reviews = data.google_reviews or []
-    
-    # If no lat/lng provided but place_id exists, try backend fetch
-    if data.place_id and not (latitude and longitude):
-        place_data = await fetch_place_details(data.place_id)
-        if place_data and not place_data.get("error"):
-            latitude = place_data.get("latitude", 0) or latitude
-            longitude = place_data.get("longitude", 0) or longitude
-            google_rating = place_data.get("google_rating", 0) or google_rating
-            google_total_reviews = place_data.get("google_total_reviews", 0) or google_total_reviews
-            if not google_reviews:
-                google_reviews = place_data.get("google_reviews", [])
-    
-    new_user = {
+    user = {
         "user_id": user_id,
         "email": data.email,
         "name": data.business_name,
@@ -415,7 +387,7 @@ async def create_residencia(data: ResidenciaCreate, request: Request):
         "created_at": now.isoformat(),
         "active": True,
     }
-    await db.users.insert_one(new_user)
+    await db.users.insert_one(user)
     
     provider = {
         "provider_id": provider_id,
@@ -439,92 +411,27 @@ async def create_residencia(data: ResidenciaCreate, request: Request):
             }.items() if v
         },
         "personal_info": {"housing_type": "residencia"},
-        "rating": google_rating or 0,
-        "total_reviews": google_total_reviews or 0,
+        "rating": 0,
+        "total_reviews": 0,
         "approved": True,
         "verified": False,
-        "latitude": latitude,
-        "longitude": longitude,
+        "latitude": 0,
+        "longitude": 0,
         "place_id": data.place_id or "",
-        "google_rating": google_rating,
-        "google_total_reviews": google_total_reviews,
-        "google_reviews": google_reviews,
         "coverage_zone": "10",
         "created_at": now,
         "approved_at": now,
     }
     await db.providers.insert_one(provider)
     
-    response = {
+    return {
         "provider_id": provider_id,
         "user_id": user_id,
         "business_name": data.business_name,
         "email": data.email,
         "password": password,
-        "status": "created",
-        "google_data": {
-            "latitude": latitude,
-            "longitude": longitude,
-            "google_rating": google_rating,
-            "google_total_reviews": google_total_reviews,
-            "reviews_count": len(google_reviews),
-        }
+        "status": "created"
     }
-    
-    return response
-
-
-@router.get("/google-place/{place_id}")
-async def get_google_place_details(place_id: str, request: Request):
-    """Fetch Google Place details for preview"""
-    user = await get_current_user(request, db)
-    await require_admin(user)
-    
-    place_data = await fetch_place_details(place_id)
-    if not place_data:
-        raise HTTPException(status_code=404, detail="No se encontraron datos para este Place ID")
-    if place_data.get("error"):
-        raise HTTPException(status_code=400, detail=place_data.get("error_message", place_data.get("error")))
-    return place_data
-
-
-@router.post("/providers/{provider_id}/refresh-google")
-async def refresh_google_data(provider_id: str, request: Request):
-    """Refresh Google Place data for an existing provider"""
-    user = await get_current_user(request, db)
-    await require_admin(user)
-    
-    provider = await db.providers.find_one({"provider_id": provider_id})
-    if not provider:
-        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
-    
-    place_id = provider.get("place_id", "")
-    if not place_id:
-        raise HTTPException(status_code=400, detail="Este proveedor no tiene Place ID configurado")
-    
-    place_data = await fetch_place_details(place_id)
-    if not place_data or place_data.get("error"):
-        raise HTTPException(status_code=400, detail=place_data.get("error_message", "Error al obtener datos de Google"))
-    
-    update = {
-        "latitude": place_data.get("latitude", 0),
-        "longitude": place_data.get("longitude", 0),
-        "google_rating": place_data.get("google_rating", 0),
-        "google_total_reviews": place_data.get("google_total_reviews", 0),
-        "google_reviews": place_data.get("google_reviews", []),
-        "rating": place_data.get("google_rating", 0),
-        "total_reviews": place_data.get("google_total_reviews", 0),
-    }
-    
-    await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
-    
-    return {
-        "message": "Datos de Google actualizados",
-        **{k: v for k, v in update.items() if k != "google_reviews"},
-        "reviews_count": len(place_data.get("google_reviews", [])),
-    }
-
-
 
 class BulkResidenciaItem(BaseModel):
     business_name: str
@@ -893,8 +800,8 @@ async def admin_upload_gallery(provider_id: str, request: Request, file: UploadF
 
     contents = await file.read()
     current_gallery = provider.get("gallery", [])
-    if len(current_gallery) >= 3:
-        raise HTTPException(status_code=400, detail="Máximo 3 fotos en galería estándar")
+    if len(current_gallery) >= 10:
+        raise HTTPException(status_code=400, detail="Máximo 10 fotos")
 
     from pathlib import Path
     from routes.provider_routes import compress_image, GALLERY_DIR
@@ -936,63 +843,6 @@ async def admin_delete_gallery(provider_id: str, photo_id: str, request: Request
     return {"message": "Foto eliminada"}
 
 
-@router.post("/providers/{provider_id}/slider/upload")
-async def admin_upload_slider(provider_id: str, request: Request, file: UploadFile = File(...)):
-    user = await get_current_user(request, db)
-    await require_admin(user)
-
-    provider = await db.providers.find_one({"provider_id": provider_id})
-    if not provider:
-        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
-
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
-
-    contents = await file.read()
-    current_slider = provider.get("slider_photos", [])
-    if len(current_slider) >= 10:
-        raise HTTPException(status_code=400, detail="Máximo 10 fotos en slider premium")
-
-    from pathlib import Path
-    from routes.provider_routes import compress_image, SLIDER_DIR
-    compressed_data, thumbnail_data = compress_image(contents)
-    photo_id = f"slider_{uuid.uuid4().hex[:12]}"
-    main_path = SLIDER_DIR / f"{photo_id}.jpg"
-    thumb_path = SLIDER_DIR / f"{photo_id}_thumb.jpg"
-    with open(main_path, "wb") as f:
-        f.write(compressed_data)
-    with open(thumb_path, "wb") as f:
-        f.write(thumbnail_data)
-
-    photo_record = {
-        "photo_id": photo_id,
-        "url": f"/api/uploads/slider/{photo_id}.jpg",
-        "thumbnail_url": f"/api/uploads/slider/{photo_id}_thumb.jpg",
-        "uploaded_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.providers.update_one(
-        {"provider_id": provider_id},
-        {"$push": {"slider_photos": photo_record}},
-    )
-    return {"message": "Foto del slider subida", "photo": photo_record}
-
-
-@router.delete("/providers/{provider_id}/slider/{photo_id}")
-async def admin_delete_slider(provider_id: str, photo_id: str, request: Request):
-    user = await get_current_user(request, db)
-    await require_admin(user)
-
-    provider = await db.providers.find_one({"provider_id": provider_id})
-    if not provider:
-        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
-
-    await db.providers.update_one(
-        {"provider_id": provider_id},
-        {"$pull": {"slider_photos": {"photo_id": photo_id}}},
-    )
-    return {"message": "Foto del slider eliminada"}
-
-
 @router.put("/providers/{provider_id}/amenities")
 async def admin_update_amenities(provider_id: str, request: Request):
     user = await get_current_user(request, db)
@@ -1022,9 +872,8 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
     if not provider:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
 
-    allowed = ["business_name", "phone", "whatsapp", "address", "region", "comuna", "place_id",
-               "social_links", "services", "amenities", "description", "personal_info",
-               "youtube_video_url", "is_featured", "is_subscribed"]
+    allowed = ["business_name", "phone", "address", "region", "comuna", "place_id",
+               "social_links", "services", "amenities", "description"]
     update = {k: v for k, v in body.items() if k in allowed}
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
