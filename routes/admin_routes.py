@@ -1377,7 +1377,8 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
     allowed = ["business_name", "phone", "whatsapp", "address", "region", "comuna", "place_id",
                "social_links", "services", "amenities", "description", "youtube_video_url",
                "personal_info", "latitude", "longitude", "is_featured", "is_subscribed",
-               "service_type", "service_comunas", "walking_zones", "coverage_radius_km"]
+               "service_type", "service_comunas", "walking_zones", "coverage_radius_km",
+               "profile_photo"]
     update = {k: v for k, v in body.items() if k in allowed}
     # Map admin toggles to admin-specific fields
     if "is_featured" in update:
