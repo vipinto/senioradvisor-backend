@@ -24,9 +24,12 @@ GALLERY_DIR = UPLOADS_DIR / "gallery"
 PERSONAL_PHOTOS_DIR = UPLOADS_DIR / "personal"
 PROFILE_PHOTOS_DIR = UPLOADS_DIR / "profile"
 
+PREMIUM_GALLERY_DIR = UPLOADS_DIR / "premium_gallery"
+
 GALLERY_DIR.mkdir(parents=True, exist_ok=True)
 PERSONAL_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+PREMIUM_GALLERY_DIR.mkdir(parents=True, exist_ok=True)
 
 # Max image dimensions and quality for compression
 MAX_IMAGE_WIDTH = 1200
@@ -200,6 +203,18 @@ async def get_my_provider_profile(request: Request):
     provider["services"] = services
     provider["profile_completeness"] = calculate_profile_completeness(provider, services)
 
+    # Check subscription status
+    sub = await db.subscriptions.find_one(
+        {"user_id": user["user_id"], "status": "active"},
+        {"_id": 0},
+    )
+    # Admin override: if is_subscribed stored in provider doc (from DB), use that
+    if "is_subscribed" in provider and isinstance(provider.get("is_subscribed"), bool):
+        pass  # keep admin-set value
+    else:
+        provider["is_subscribed"] = sub is not None
+    provider["has_active_subscription"] = sub is not None or provider.get("is_subscribed", False)
+
     return provider
 
 
@@ -213,7 +228,7 @@ async def update_my_provider_profile(request: Request):
         "business_name", "description", "phone", "whatsapp", "address",
         "comuna", "region", "services", "always_active", "available_dates",
         "latitude", "longitude", "amenities", "social_links", "place_id",
-        "price_from"
+        "price_from", "youtube_video_url"
     ]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
     update_data["updated_at"] = datetime.now(timezone.utc)
@@ -250,6 +265,7 @@ async def update_my_profile_services(request: Request):
                 "service_type": svc.get("service_type"),
                 "price_from": svc.get("price_from", 0),
                 "description": svc.get("description", ""),
+                "sub_prices": svc.get("sub_prices", []),
                 "rules": svc.get("rules", ""),
                 "pet_sizes": svc.get("pet_sizes", []),
                 "created_at": datetime.now(timezone.utc),
@@ -342,6 +358,28 @@ async def get_personal_info(request: Request):
     if not provider:
         raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
     return provider.get("personal_info", {})
+
+
+
+@router.put("/providers/my-profile/youtube-video")
+async def update_youtube_video(request: Request):
+    """Update provider's YouTube video URL (subscription required)"""
+    user = await get_current_user(request, db)
+    await require_subscription(user, db)
+
+    provider = await db.providers.find_one({"user_id": user["user_id"]})
+    if not provider:
+        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
+
+    body = await request.json()
+    youtube_url = body.get("youtube_video_url", "").strip()
+
+    await db.providers.update_one(
+        {"provider_id": provider["provider_id"]},
+        {"$set": {"youtube_video_url": youtube_url}},
+    )
+    return {"message": "Video actualizado", "youtube_video_url": youtube_url}
+
 
 
 @router.post("/providers/my-profile/photo")
@@ -518,8 +556,8 @@ async def upload_gallery_photo(request: Request, file: UploadFile = File(...)):
     original_size = len(contents)
 
     current_gallery = provider.get("gallery", [])
-    if len(current_gallery) >= 10:
-        raise HTTPException(status_code=400, detail="Máximo 10 fotos en la galería")
+    if len(current_gallery) >= 3:
+        raise HTTPException(status_code=400, detail="Máximo 3 fotos en la galería")
 
     try:
         compressed_data, thumbnail_data = compress_image(contents)
@@ -648,6 +686,102 @@ async def reorder_gallery(request: Request):
     return {"message": "Galería reordenada", "gallery": new_gallery}
 
 
+
+# ============= PREMIUM GALLERY (SUBSCRIPTION REQUIRED) =============
+
+@router.get("/providers/my-profile/premium-gallery")
+async def get_my_premium_gallery(request: Request):
+    """Get current provider's premium gallery photos"""
+    user = await get_current_user(request, db)
+    provider = await db.providers.find_one(
+        {"user_id": user["user_id"]},
+        {"_id": 0, "premium_gallery": 1},
+    )
+    if not provider:
+        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
+    return provider.get("premium_gallery", [])
+
+
+@router.post("/providers/my-profile/premium-gallery")
+async def upload_premium_gallery_photo(request: Request, file: UploadFile = File(...)):
+    """Upload a photo to provider's premium gallery (subscription required)"""
+    user = await get_current_user(request, db)
+    await require_subscription(user, db)
+
+    provider = await db.providers.find_one({"user_id": user["user_id"]})
+    if not provider:
+        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
+
+    current_premium = provider.get("premium_gallery", [])
+    if len(current_premium) >= 10:
+        raise HTTPException(status_code=400, detail="Máximo 10 fotos en el slider premium")
+
+    contents = await file.read()
+
+    try:
+        compressed_data, thumbnail_data = compress_image(contents)
+        photo_id = f"premium_{uuid.uuid4().hex[:12]}"
+        main_filename = f"{photo_id}.jpg"
+        thumb_filename = f"{photo_id}_thumb.jpg"
+
+        with open(PREMIUM_GALLERY_DIR / main_filename, "wb") as f:
+            f.write(compressed_data)
+        with open(PREMIUM_GALLERY_DIR / thumb_filename, "wb") as f:
+            f.write(thumbnail_data)
+
+        photo_record = {
+            "photo_id": photo_id,
+            "url": f"/api/uploads/premium_gallery/{main_filename}",
+            "thumbnail_url": f"/api/uploads/premium_gallery/{thumb_filename}",
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        await db.providers.update_one(
+            {"provider_id": provider["provider_id"]},
+            {"$push": {"premium_gallery": photo_record}},
+        )
+
+        return {"message": "Foto premium subida exitosamente", "photo": photo_record}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al procesar imagen: {str(e)}")
+
+
+@router.delete("/providers/my-profile/premium-gallery/{photo_id}")
+async def delete_premium_gallery_photo(photo_id: str, request: Request):
+    """Delete a photo from provider's premium gallery"""
+    user = await get_current_user(request, db)
+    await require_subscription(user, db)
+
+    provider = await db.providers.find_one({"user_id": user["user_id"]})
+    if not provider:
+        raise HTTPException(status_code=404, detail="No tienes perfil de proveedor")
+
+    premium_gallery = provider.get("premium_gallery", [])
+    photo_found = any(p["photo_id"] == photo_id for p in premium_gallery)
+    if not photo_found:
+        raise HTTPException(status_code=404, detail="Foto no encontrada")
+
+    try:
+        for fname in [f"{photo_id}.jpg", f"{photo_id}_thumb.jpg"]:
+            fpath = PREMIUM_GALLERY_DIR / fname
+            if fpath.exists():
+                fpath.unlink()
+    except Exception:
+        pass
+
+    await db.providers.update_one(
+        {"provider_id": provider["provider_id"]},
+        {"$pull": {"premium_gallery": {"photo_id": photo_id}}},
+    )
+
+    return {"message": "Foto premium eliminada"}
+
+
+
 @router.get("/providers")
 async def search_providers(
     request: Request,
@@ -667,6 +801,8 @@ async def search_providers(
     skip: int = 0,
     limit: int = 50,
     featured: bool = False,
+    min_price: Optional[int] = None,
+    max_price: Optional[int] = None,
 ):
     """Search providers with filters"""
     user = await get_current_user_optional(request, db)
@@ -696,6 +832,14 @@ async def search_providers(
     if min_rating:
         query["rating"] = {"$gte": min_rating}
 
+    if min_price or max_price:
+        price_filter = {}
+        if min_price:
+            price_filter["$gte"] = min_price
+        if max_price:
+            price_filter["$lte"] = max_price
+        query["price_from"] = price_filter
+
     if all([bounds_south, bounds_west, bounds_north, bounds_east]):
         query["latitude"] = {"$gte": bounds_south, "$lte": bounds_north}
         query["longitude"] = {"$gte": bounds_west, "$lte": bounds_east}
@@ -720,7 +864,8 @@ async def search_providers(
     import logging
     logging.info(f"Provider search query: {query}")
     
-    providers = await db.providers.find(query, {"_id": 0}).skip(skip).limit(limit).to_list(limit)
+    # Fetch ALL matching providers first, sort in Python, then paginate
+    providers = await db.providers.find(query, {"_id": 0}).to_list(2000)
     
     logging.info(f"Found {len(providers)} providers")
 
@@ -779,31 +924,38 @@ async def search_providers(
     for provider in providers:
         is_verified = provider.get("verified", False)
         is_subscribed = provider["user_id"] in subscribed_provider_user_ids
-        provider["is_featured"] = is_verified and is_subscribed
-        provider["is_verified_only"] = is_verified and not is_subscribed
+        admin_featured = provider.get("is_featured_admin", False)
+        admin_subscribed = provider.get("is_subscribed", False)
+        provider["is_featured"] = admin_featured
+        provider["provider_is_subscribed"] = admin_subscribed or is_subscribed
+        provider["is_verified_only"] = is_verified and not provider["is_featured"] and not provider["provider_is_subscribed"]
 
-        # Clientes ven toda la información sin restricción
-        # provider["phone"] = None
-        # provider["whatsapp"] = None
-        # provider["address"] = None
-        provider["full_name_hidden"] = False  # Siempre mostrar nombre completo
+        provider["full_name_hidden"] = False
 
     def sort_key(p):
-        if p.get("is_featured"):
-            return (0, -(p.get("rating") or 0))
-        elif p.get("is_verified_only"):
-            return (1, -(p.get("rating") or 0))
+        feat = p.get("is_featured", False)
+        subs = p.get("provider_is_subscribed", False)
+        rating = -(p.get("rating") or 0)
+        if feat and subs:
+            return (0, rating)
+        elif subs and not feat:
+            return (1, rating)
+        elif feat and not subs:
+            return (2, rating)
         else:
-            return (2, -(p.get("rating") or 0))
+            return (3, rating)
 
     providers.sort(key=sort_key)
 
-    # Filter featured only (with subscription) and minimum rating 4.0
+    # Filter featured only: admin-featured bypass rating, others need >= 4.0
     if featured:
-        providers = [p for p in providers if p.get("is_featured") and (p.get("rating") or 0) >= 4.0]
+        providers = [p for p in providers if p.get("is_featured") and (p.get("is_featured_admin") or (p.get("rating") or 0) >= 4.0)]
 
-    # Count total for pagination (re-run query without skip/limit)
-    total_count = await db.providers.count_documents(query)
+    # Total count after all filters
+    total_count = len(providers)
+
+    # Apply pagination AFTER sorting
+    providers = providers[skip:skip + limit]
 
     return {"results": providers, "total": total_count, "skip": skip, "limit": limit}
 
@@ -966,6 +1118,29 @@ async def get_provider(provider_id: str, request: Request):
 
     provider["reviews"] = reviews
 
+    # Merge google reviews with internal reviews
+    google_reviews = provider.get("google_reviews", [])
+    merged_reviews = list(reviews)  # Internal first
+    for gr in google_reviews[:20]:
+        merged_reviews.append({
+            "user_name": gr.get("author", "Usuario Google"),
+            "user_picture": gr.get("author_photo", ""),
+            "rating": gr.get("rating", 0),
+            "overall_rating": gr.get("rating", 0),
+            "comment": gr.get("text", ""),
+            "time_description": gr.get("time_description", ""),
+            "publish_time": gr.get("publish_time", ""),
+            "source": "google",
+        })
+    # Sort by most recent first
+    merged_reviews.sort(
+        key=lambda r: r.get("publish_time") or r.get("created_at") or "",
+        reverse=True,
+    )
+    provider["reviews"] = merged_reviews
+    # Remove raw google_reviews from response to keep it clean
+    provider.pop("google_reviews", None)
+
     has_subscription = False
     is_connected = False
     has_pending_request = False
@@ -988,10 +1163,18 @@ async def get_provider(provider_id: str, request: Request):
         {"user_id": provider["user_id"], "status": "active"},
         {"_id": 0},
     )
-    provider["is_featured"] = provider.get("verified", False) and provider_sub is not None
+    provider_is_subscribed = provider_sub is not None
+    admin_featured = provider.get("is_featured_admin", False)
+    admin_subscribed = provider.get("is_subscribed", False)
+    provider["is_featured"] = admin_featured or (provider.get("verified", False) and (provider_is_subscribed or admin_subscribed))
+    provider["provider_is_subscribed"] = admin_subscribed or provider_is_subscribed
     provider["viewer_has_subscription"] = True  # Clientes siempre ven todo
     provider["viewer_is_connected"] = is_connected
     provider["viewer_has_pending_request"] = has_pending_request
+
+    # Only include premium_gallery if provider is subscribed
+    if not provider.get("provider_is_subscribed"):
+        provider["premium_gallery"] = []
 
     # Clientes ven toda la información de contacto sin restricción
     provider["contact_blocked"] = False

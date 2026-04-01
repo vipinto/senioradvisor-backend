@@ -66,9 +66,9 @@ async def create_subscription_payment(payment_request: CreatePaymentRequest, req
     try:
         mp_service = get_mercadopago_service()
 
-        frontend_url = os.environ.get('CORS_ORIGINS', 'https://senioradvisor.cl').split(',')[0]
+        frontend_url = os.environ.get('CORS_ORIGINS', 'https://SeniorAdvisor.cl').split(',')[0]
         if frontend_url == '*':
-            frontend_url = 'https://senioradvisor.cl'
+            frontend_url = 'https://SeniorAdvisor.cl'
 
         backend_url = str(request.base_url).rstrip('/')
         notification_url = f"{backend_url}/api/webhooks/mercadopago"
