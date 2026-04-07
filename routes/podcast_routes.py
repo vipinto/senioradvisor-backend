@@ -23,7 +23,7 @@ async def create_podcast_category(data: dict):
         raise HTTPException(status_code=400, detail="Categoria ya existe")
     max_order = await db.podcast_categories.find({}).sort("order", -1).to_list(1)
     order = (max_order[0]["order"] + 1) if max_order else 0
-    cat = {"category_id": str(uuid.uuid4()), "name": name, "description": data.get("description", ""), "order": order}
+    cat = {"category_id": str(uuid.uuid4()), "name": name, "description": data.get("description", ""), "logo": data.get("logo", ""), "order": order}
     await db.podcast_categories.insert_one(cat)
     del cat["_id"]
     return cat
@@ -35,6 +35,8 @@ async def update_podcast_category(category_id: str, data: dict):
         update["name"] = data["name"].strip()
     if "description" in data:
         update["description"] = data["description"].strip()
+    if "logo" in data:
+        update["logo"] = data["logo"]
     if not update:
         raise HTTPException(status_code=400, detail="Nada que actualizar")
     result = await db.podcast_categories.update_one({"category_id": category_id}, {"$set": update})
