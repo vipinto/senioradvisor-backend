@@ -44,21 +44,21 @@ async def get_me(request: Request):
     """Get current authenticated user"""
     user = await get_current_user(request, db)
 
-    subscription = await db.subscriptions.find_one(
-        {"user_id": user["user_id"], "status": "active"},
-        {"_id": 0}
-    )
-
     provider = None
+    has_subscription = False
     if user["role"] == "provider":
         provider = await db.providers.find_one(
             {"user_id": user["user_id"]},
             {"_id": 0}
         )
+        if provider and provider.get("plan_active") and provider.get("plan_type") in ("premium", "premium_plus"):
+            has_subscription = True
+    elif user["role"] == "client":
+        has_subscription = True
 
     return {
         **user,
-        "has_subscription": subscription is not None,
+        "has_subscription": has_subscription,
         "provider": provider
     }
 

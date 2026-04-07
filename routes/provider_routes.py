@@ -923,33 +923,28 @@ async def search_providers(
 
     for provider in providers:
         is_verified = provider.get("verified", False)
-        is_subscribed = provider["user_id"] in subscribed_provider_user_ids
-        admin_featured = provider.get("is_featured_admin", False)
-        admin_subscribed = provider.get("is_subscribed", False)
-        provider["is_featured"] = admin_featured
-        provider["provider_is_subscribed"] = admin_subscribed or is_subscribed
-        provider["is_verified_only"] = is_verified and not provider["is_featured"] and not provider["provider_is_subscribed"]
-
+        plan = provider.get("plan_type", "")
+        plan_active = provider.get("plan_active", False)
+        
+        # Map plan_type to display flags
+        provider["plan_type"] = plan if plan_active else ""
+        provider["is_featured"] = plan in ("premium", "premium_plus") and plan_active
+        provider["provider_is_subscribed"] = plan in ("premium", "premium_plus") and plan_active
+        provider["is_premium_plus"] = plan == "premium_plus" and plan_active
+        provider["is_verified_only"] = is_verified and not provider["is_featured"]
         provider["full_name_hidden"] = False
 
     def sort_key(p):
-        feat = p.get("is_featured", False)
-        subs = p.get("provider_is_subscribed", False)
+        plan = p.get("plan_type", "")
         rating = -(p.get("rating") or 0)
-        if feat and subs:
-            return (0, rating)
-        elif subs and not feat:
-            return (1, rating)
-        elif feat and not subs:
-            return (2, rating)
-        else:
-            return (3, rating)
+        plan_order = {"premium_plus": 0, "premium": 1, "destacado": 2}.get(plan, 3)
+        return (plan_order, rating)
 
     providers.sort(key=sort_key)
 
-    # Filter featured only: admin-featured bypass rating, others need >= 4.0
+    # Filter featured only: premium and premium_plus
     if featured:
-        providers = [p for p in providers if p.get("is_featured") and (p.get("is_featured_admin") or (p.get("rating") or 0) >= 4.0)]
+        providers = [p for p in providers if p.get("plan_type") in ("premium", "premium_plus")]
 
     # Total count after all filters
     total_count = len(providers)

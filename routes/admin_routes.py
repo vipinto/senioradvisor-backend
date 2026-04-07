@@ -172,7 +172,7 @@ async def get_admin_stats(request: Request):
     total_providers = await db.providers.count_documents({"approved": True})
     pending_providers = await db.providers.count_documents({"approved": False})
     verified_providers = await db.providers.count_documents({"verified": True})
-    active_subscriptions = await db.subscriptions.count_documents({"status": "active"})
+    active_subscriptions = await db.providers.count_documents({"plan_active": True, "plan_type": {"$in": ["destacado", "premium", "premium_plus"]}})
     total_reviews = await db.reviews.count_documents({})
 
     return {
@@ -1208,6 +1208,37 @@ async def export_residencias_csv(request: Request):
     )
 
 
+@router.put("/providers/{provider_id}/credentials")
+async def admin_update_provider_credentials(provider_id: str, request: Request):
+    """Admin updates email and/or password for a provider"""
+    user = await get_current_user(request, db)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+    
+    provider = await db.providers.find_one({"provider_id": provider_id})
+    if not provider:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+    
+    body = await request.json()
+    new_email = body.get("email", "").strip()
+    new_password = body.get("password", "").strip()
+    
+    update = {}
+    if new_email:
+        existing = await db.users.find_one({"email": new_email, "user_id": {"$ne": provider["user_id"]}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Ese email ya está en uso por otra cuenta")
+        update["email"] = new_email
+    if new_password:
+        update["hashed_password"] = _hash_password(new_password)
+    
+    if update:
+        await db.users.update_one({"user_id": provider["user_id"]}, {"$set": update})
+    
+    return {"status": "ok", "updated_fields": list(update.keys())}
+
+
+
 
 # ============= ADMIN GALLERY & AMENITIES MANAGEMENT =============
 
@@ -1378,7 +1409,7 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
                "social_links", "services", "amenities", "description", "youtube_video_url",
                "personal_info", "latitude", "longitude", "is_featured", "is_subscribed",
                "service_type", "service_comunas", "walking_zones", "coverage_radius_km",
-               "profile_photo"]
+               "profile_photo", "plan_type", "plan_active", "verified"]
     update = {k: v for k, v in body.items() if k in allowed}
     # Map admin toggles to admin-specific fields
     if "is_featured" in update:
