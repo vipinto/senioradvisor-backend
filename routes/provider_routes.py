@@ -803,6 +803,8 @@ async def search_providers(
     featured: bool = False,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
+    amenities: Optional[str] = None,
+    has_gallery: bool = False,
 ):
     """Search providers with filters"""
     user = await get_current_user_optional(request, db)
@@ -838,11 +840,19 @@ async def search_providers(
             price_filter["$gte"] = min_price
         if max_price:
             price_filter["$lte"] = max_price
-        query["price_from"] = price_filter
+        query["services.price_from"] = price_filter
 
     if all([bounds_south, bounds_west, bounds_north, bounds_east]):
         query["latitude"] = {"$gte": bounds_south, "$lte": bounds_north}
         query["longitude"] = {"$gte": bounds_west, "$lte": bounds_east}
+
+    if amenities:
+        amenity_list = [a.strip() for a in amenities.split(",") if a.strip()]
+        if amenity_list:
+            query["amenities"] = {"$all": amenity_list}
+
+    if has_gallery:
+        query["gallery"] = {"$exists": True, "$ne": []}
 
     if service_type:
         services_coll = await db.services.find(
