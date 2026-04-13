@@ -805,6 +805,8 @@ async def search_providers(
     max_price: Optional[int] = None,
     amenities: Optional[str] = None,
     has_gallery: bool = False,
+    region: Optional[str] = None,
+    comuna_filter: Optional[str] = None,
 ):
     """Search providers with filters"""
     user = await get_current_user_optional(request, db)
@@ -833,6 +835,10 @@ async def search_providers(
         query["verified"] = True
     if min_rating:
         query["rating"] = {"$gte": min_rating}
+    if region:
+        query["region"] = {"$regex": region, "$options": "i"}
+    if comuna_filter:
+        query["comuna"] = comuna_filter
 
     if min_price or max_price:
         price_filter = {}
@@ -971,6 +977,38 @@ async def get_comunas():
     comunas = await db.providers.distinct("comuna", {"approved": True, "comuna": {"$exists": True, "$ne": ""}})
     comunas = sorted([c for c in comunas if c and c.strip()])
     return comunas
+
+
+@router.get("/providers/filters-options")
+async def get_filter_options(region: Optional[str] = None):
+    """Get available regions and comunas from approved providers"""
+    raw_regions = await db.providers.distinct("region", {"approved": True, "region": {"$exists": True, "$ne": ""}})
+    
+    # Normalize regions: strip prefix, split combined entries, deduplicate
+    normalized = set()
+    for r in raw_regions:
+        if not r or not r.strip():
+            continue
+        # Split by comma or slash
+        parts = r.replace("/", ",").split(",")
+        for part in parts:
+            clean = part.strip()
+            # Remove "Región " or "Region " prefix
+            for prefix in ["Región ", "Region ", "Región de ", "Region de "]:
+                if clean.startswith(prefix):
+                    clean = clean[len(prefix):]
+            if clean:
+                normalized.add(clean)
+    regions = sorted(normalized)
+
+    comuna_query = {"approved": True, "comuna": {"$exists": True, "$ne": ""}}
+    if region:
+        # Match providers whose region field contains the selected region name
+        comuna_query["region"] = {"$regex": region, "$options": "i"}
+    comunas = await db.providers.distinct("comuna", comuna_query)
+    comunas = sorted([c for c in comunas if c and c.strip()])
+
+    return {"regions": regions, "comunas": comunas}
 
 
 # ============= SUCURSALES (BRANCHES) =============
