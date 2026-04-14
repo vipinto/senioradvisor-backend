@@ -1426,4 +1426,38 @@ async def owner_contact(data: OwnerContactForm):
     }
     await db.owner_contacts.insert_one(contact)
     contact.pop("_id", None)
+
+    # Send email via Resend
+    try:
+        from email_service import send_email
+        html = f"""
+        <div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: #33404f; color: white; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+                <h1 style="margin: 0; font-size: 20px;">Nuevo Contacto de Dueño</h1>
+            </div>
+            <div style="background: #f8f9fa; padding: 24px; border-radius: 0 0 12px 12px;">
+                <div style="background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                    <p><strong>Nombre:</strong> {data.nombre}</p>
+                    <p><strong>Email:</strong> {data.email}</p>
+                    <p><strong>Residencia:</strong> {data.asunto}</p>
+                </div>
+                <div style="background: white; border-radius: 8px; padding: 16px;">
+                    <p><strong>Mensaje:</strong></p>
+                    <p style="color: #555;">{data.mensaje}</p>
+                </div>
+                <p style="color: #666; font-size: 12px; margin-top: 16px; text-align: center;">
+                    Responder directamente a: {data.email}
+                </p>
+            </div>
+        </div>
+        """
+        await send_email(
+            to="hola@senioradvisor.cl",
+            subject=f"Contacto Dueño: {data.asunto}",
+            html=html
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error sending owner contact email: {e}")
+
     return {"success": True, "message": "Mensaje enviado correctamente"}

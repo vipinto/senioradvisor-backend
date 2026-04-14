@@ -149,6 +149,8 @@ async def create_lead(data: PartnerLeadCreate):
         emails = [e.strip() for e in convenio["contact_email"].split(",") if e.strip()]
         for email_addr in emails:
             asyncio.create_task(send_email(email_addr, f"Nueva solicitud SeniorAdvisor - {data.name}", partner_html))
+        # Copia a hola@senioradvisor.cl
+        asyncio.create_task(send_email("hola@senioradvisor.cl", f"[Copia] Nueva solicitud Convenio {convenio_name} - {data.name}", partner_html))
 
     return lead
 
