@@ -14,6 +14,13 @@ from auth import (
     require_provider, require_subscription
 )
 from routes.contact_request_routes import check_connection
+from pydantic import BaseModel
+
+class OwnerContactForm(BaseModel):
+    nombre: str
+    email: str
+    asunto: str
+    mensaje: str
 
 router = APIRouter()
 
@@ -1403,3 +1410,20 @@ async def get_provider_reviews(request: Request):
         review["user_name"] = reviewer.get("name", "Usuario") if reviewer else "Usuario"
 
     return reviews
+
+
+@router.post("/providers/owner-contact")
+async def owner_contact(data: OwnerContactForm):
+    """Public endpoint - owner contact form from provider profile"""
+    contact = {
+        "contact_id": f"oc_{uuid.uuid4().hex[:12]}",
+        "nombre": data.nombre,
+        "email": data.email,
+        "asunto": data.asunto,
+        "mensaje": data.mensaje,
+        "type": "owner_contact",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.owner_contacts.insert_one(contact)
+    contact.pop("_id", None)
+    return {"success": True, "message": "Mensaje enviado correctamente"}

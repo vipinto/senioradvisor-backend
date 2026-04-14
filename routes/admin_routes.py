@@ -13,6 +13,65 @@ from routes.notification_routes import create_notification
 router = APIRouter(prefix="/admin")
 
 
+import unicodedata
+import re
+
+VALID_AMENITIES = [
+    'Acceso silla de ruedas', 'Acompañamiento', 'Aire acondicionado', 'Alimentación especial',
+    'Áreas verdes', 'Calefacción', 'Enfermería', 'Estacionamiento',
+    'Habitación privada', 'Jardín', 'Kinesiología', 'Lavandería',
+    'Sala de estar', 'Terapia ocupacional', 'Terraza', 'WiFi'
+]
+
+def _normalize_text(text):
+    """Remove accents, lowercase, strip extra spaces"""
+    text = text.strip().lower()
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+_AMENITY_MAP = {_normalize_text(a): a for a in VALID_AMENITIES}
+
+def normalize_amenities(raw_list):
+    """Match raw amenity strings to valid ones using fuzzy matching"""
+    result = []
+    for raw in raw_list:
+        norm = _normalize_text(raw)
+        # Exact normalized match
+        if norm in _AMENITY_MAP:
+            result.append(_AMENITY_MAP[norm])
+            continue
+        # Partial / contains match
+        matched = False
+        for key, valid in _AMENITY_MAP.items():
+            if norm in key or key in norm:
+                result.append(valid)
+                matched = True
+                break
+        if not matched:
+            # Check if any word significantly overlaps
+            for key, valid in _AMENITY_MAP.items():
+                norm_words = set(norm.split())
+                key_words = set(key.split())
+                overlap = norm_words & key_words
+                if len(overlap) >= 1 and len(overlap) / max(len(key_words), 1) >= 0.5:
+                    result.append(valid)
+                    matched = True
+                    break
+        if not matched:
+            # Keep as-is if no match found
+            result.append(raw.strip())
+    # Deduplicate preserving order
+    seen = set()
+    deduped = []
+    for a in result:
+        if a not in seen:
+            seen.add(a)
+            deduped.append(a)
+    return deduped
+
+
 class PlanCreateUpdate(BaseModel):
     name: str
     duration_months: int
@@ -842,7 +901,8 @@ async def upload_excel_residencias(request: Request, file: UploadFile = File(...
                 })
 
         amenities_str = get_val(row, "amenities") or get_val(row, "servicios")
-        amenities = [a.strip() for a in amenities_str.split(",") if a.strip()] if amenities_str else []
+        amenities_raw = [a.strip() for a in amenities_str.split(",") if a.strip()] if amenities_str else []
+        amenities = normalize_amenities(amenities_raw)
 
         social_links = {}
         if website:
@@ -1414,6 +1474,11 @@ async def admin_update_provider_profile(provider_id: str, request: Request):
     # Map admin toggles to admin-specific fields
     if "is_featured" in update:
         update["is_featured_admin"] = update.pop("is_featured")
+    # Auto-activate plan when plan_type is set
+    if "plan_type" in update and update["plan_type"] in ("destacado", "premium", "premium_plus"):
+        update["plan_active"] = True
+    elif "plan_type" in update and not update["plan_type"]:
+        update["plan_active"] = False
     if update:
         await db.providers.update_one({"provider_id": provider_id}, {"$set": update})
 
